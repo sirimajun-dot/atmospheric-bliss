@@ -1,0 +1,17 @@
+# Robots.txt for Monitoring Application
+# This file tells search engine crawlers which pages or files they can or can't request from your site.
+
+User-agent: *
+
+# Disallow access to API endpoints to prevent unnecessary load and data scraping
+Disallow: /api/
+
+# Disallow access to internal settings and legal pages if they are separate routes
+Disallow: /settings/
+Disallow: /tos/
+
+# Allow indexing of the main dashboard and public content
+Allow: /
+
+# Host
+Host: https://ais-pre-hgykh2r26tv6k7rbrdl26w-520144813704.asia-southeast1.run.app

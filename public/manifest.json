@@ -1,0 +1,22 @@
+{
+  "short_name": "AtmosBliss",
+  "name": "Atmospheric Bliss Risk Intelligence",
+  "icons": [
+    {
+      "src": "https://picsum.photos/id/10/192/192",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "https://picsum.photos/id/10/512/512",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#f8fafc",
+  "display": "standalone",
+  "scope": "/",
+  "theme_color": "#1e293b",
+  "description": "Global Atmospheric and Existential Risk Monitoring"
+}

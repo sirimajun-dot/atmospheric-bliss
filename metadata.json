@@ -1,0 +1,7 @@
+{
+  "name": "Atmospheric Bliss 26",
+  "description": "A high-fidelity PWA \u0026 LINE LIFF dashboard for monitoring global atmospheric and existential risks with real-time data integration.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

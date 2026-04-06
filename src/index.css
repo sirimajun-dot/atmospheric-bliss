@@ -1,0 +1,131 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", "Inter", "Sarabun", ui-sans-serif, system-ui, sans-serif;
+  
+  --color-risk-critical: #ff2d55;
+  --color-risk-high: #ff9500;
+  --color-risk-medium: #ffcc00;
+  --color-risk-low: #34c759;
+  
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.75rem;
+  --radius-3xl: 2.5rem;
+  
+  --shadow-soft: 0 10px 40px -10px rgba(0, 0, 0, 0.03);
+}
+
+@layer base {
+  body {
+    @apply antialiased selection:bg-indigo-100 transition-colors duration-1000;
+    min-height: 100vh;
+  }
+
+  /* V5: White Bliss Theme (Satin Finish) */
+  body.theme-v5 {
+    @apply bg-[#f8fafc] text-[#1e293b];
+    background-image: 
+      radial-gradient(at 0% 0%, hsla(210, 40%, 98%, 1) 0, transparent 50%), 
+      radial-gradient(at 50% 0%, hsla(220, 30%, 96%, 1) 0, transparent 50%), 
+      radial-gradient(at 100% 0%, hsla(215, 25%, 95%, 1) 0, transparent 50%);
+    background-attachment: fixed;
+  }
+
+  /* V4: Atmospheric Classic Theme (Deprecated) */
+  body.theme-v4 {
+    @apply bg-[#030712] text-white;
+  }
+}
+
+/* Glassmorphism Alchemist Edition */
+.glass-panel {
+  @apply bg-white/50 backdrop-blur-[24px] border border-white/60 shadow-[0_8px_32px_0_rgba(31,38,135,0.07)];
+}
+
+.glass-card {
+  @apply bg-white/70 backdrop-blur-[12px] border border-white/40 shadow-soft;
+}
+
+
+.glow-aura {
+  filter: drop-shadow(0 0 15px currentColor);
+}
+
+/* Animations */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+@keyframes radar-pulse {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.4); }
+  70% { transform: scale(1); box-shadow: 0 0 0 20px rgba(255, 255, 255, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+}
+
+.animate-radar-pulse {
+  animation: radar-pulse 3s infinite;
+}
+
+@keyframes shimmer-scan {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.shimmer-active::after {
+  content: "";
+  position: absolute;
+  top: 0; right: 0; bottom: 0; left: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  animation: shimmer-scan 3s infinite linear;
+  pointer-events: none;
+}
+
+.glow-border-emerald {
+  box-shadow: 0 0 15px -3px rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.4) !important;
+}
+
+.glow-border-amber {
+  box-shadow: 0 0 15px -3px rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.4) !important;
+}
+
+.glass-pill {
+  @apply bg-white/40 backdrop-blur-2xl border border-white/60 shadow-soft rounded-full;
+}
+
+@keyframes mesh-drift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.mesh-aura {
+  background: linear-gradient(-45deg, rgba(79, 70, 229, 0.05), rgba(16, 185, 129, 0.05), rgba(245, 158, 11, 0.05));
+  background-size: 400% 400%;
+  animation: mesh-drift 15s ease infinite;
+}
+
+/* Custom Webkit Scrollbars for Terminal */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.4);
+  border-radius: 10px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.8);
+}
+
