@@ -42,6 +42,9 @@ const AUTHORIZED_SOURCES = [
 
 let rawDataContext = "";
 let db: Firestore | null = null;
+const PERSISTENCE_COLLECTION = "system";
+const STATE_DOC_ID = "global_state";
+const SNAPSHOT_DOC_ID = "latest_snapshot";
 
 function isFirestorePersistenceEnabled() {
   return process.env.ENABLE_FIRESTORE_PERSISTENCE === "true";
@@ -64,13 +67,23 @@ function initFirestoreIfEnabled() {
 async function loadStateFromFirestore() {
   if (!db) return;
   try {
-    const doc = await db.collection("system").doc("global_state").get();
-    if (!doc.exists) return;
-    const payload = doc.data();
-    if (!payload?.state) return;
+    const [stateDoc, snapshotDoc] = await Promise.all([
+      db.collection(PERSISTENCE_COLLECTION).doc(STATE_DOC_ID).get(),
+      db.collection(PERSISTENCE_COLLECTION).doc(SNAPSHOT_DOC_ID).get()
+    ]);
+
+    if (!stateDoc.exists && !snapshotDoc.exists) return;
+    const statePayload = stateDoc.data();
+    const snapshotPayload = snapshotDoc.data();
+
     globalState = {
       ...globalState,
-      ...payload.state
+      ...(statePayload?.state || {}),
+      report: {
+        ...globalState.report,
+        ...(snapshotPayload?.report || {})
+      },
+      insights: Array.isArray(snapshotPayload?.insights) ? snapshotPayload.insights : globalState.insights
     };
     console.log("[Persistence] globalState restored from Firestore");
   } catch (error) {
@@ -81,10 +94,27 @@ async function loadStateFromFirestore() {
 async function persistStateToFirestore() {
   if (!db) return;
   try {
-    await db.collection("system").doc("global_state").set({
-      state: globalState,
-      updatedAt: new Date().toISOString()
-    });
+    const nowIso = new Date().toISOString();
+    await Promise.all([
+      db.collection(PERSISTENCE_COLLECTION).doc(STATE_DOC_ID).set({
+        state: {
+          lastUpdated: globalState.lastUpdated,
+          system: globalState.system,
+          weather: globalState.weather,
+          connectionStatus: globalState.connectionStatus,
+          history: globalState.history
+        },
+        updatedAt: nowIso
+      }),
+      db.collection(PERSISTENCE_COLLECTION).doc(SNAPSHOT_DOC_ID).set({
+        report: {
+          dailySummary: globalState.report?.dailySummary || null,
+          risks: Array.isArray(globalState.report?.risks) ? globalState.report.risks : []
+        },
+        insights: Array.isArray(globalState.insights) ? globalState.insights.slice(0, 50) : [],
+        updatedAt: nowIso
+      })
+    ]);
   } catch (error) {
     console.error("[Persistence] save failed", error);
   }
