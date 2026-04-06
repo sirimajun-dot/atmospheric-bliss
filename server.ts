@@ -70,8 +70,7 @@ async function loadStateFromFirestore() {
     if (!payload?.state) return;
     globalState = {
       ...globalState,
-      ...payload.state,
-      system: "STABLE"
+      ...payload.state
     };
     console.log("[Persistence] globalState restored from Firestore");
   } catch (error) {
@@ -224,6 +223,7 @@ async function processIntelligence() {
       risk: 'high',
       time: new Date().toISOString()
     });
+    await persistStateToFirestore();
     return;
   }
 
