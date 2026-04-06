@@ -17,6 +17,99 @@ const parser = new Parser();
 // Helper for relative timestamps
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60000).toISOString();
 
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+/** Flatten Google GenAI / fetch-style errors for status + message sniffing. */
+function geminiErrorFingerprint(e: unknown): { httpStatus?: number; rpcStatus?: string; text: string } {
+  const chunks: string[] = [];
+  let httpStatus: number | undefined;
+  let rpcStatus: string | undefined;
+
+  const absorbString = (s: string) => {
+    chunks.push(s);
+    try {
+      const j = JSON.parse(s) as {
+        error?: { code?: number; status?: string; message?: string };
+      };
+      if (j?.error?.code != null) httpStatus = j.error.code;
+      if (j?.error?.status) rpcStatus = j.error.status;
+      if (j?.error?.message) chunks.push(j.error.message);
+    } catch {
+      /* not JSON */
+    }
+  };
+
+  const walk = (x: unknown, depth: number) => {
+    if (x == null || depth > 6) return;
+    if (typeof x === "string") {
+      absorbString(x);
+      return;
+    }
+    if (typeof x !== "object") return;
+    const o = x as Record<string, unknown>;
+    if (typeof o.status === "number") httpStatus = o.status;
+    if (typeof o.code === "number" && httpStatus === undefined) httpStatus = o.code;
+    if (typeof o.message === "string") absorbString(o.message);
+    if (o.error != null) walk(o.error, depth + 1);
+    if (o.details != null) walk(o.details, depth + 1);
+    if (o.cause != null) walk(o.cause, depth + 1);
+  };
+
+  walk(e, 0);
+  const text = chunks.join(" ");
+  return { httpStatus, rpcStatus, text };
+}
+
+function isTransientGeminiError(e: unknown): boolean {
+  if (typeof e === "object" && e != null) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ECONNRESET" || code === "ETIMEDOUT" || code === "ENOTFOUND" || code === "EAI_AGAIN") {
+      return true;
+    }
+  }
+  const { httpStatus, rpcStatus, text } = geminiErrorFingerprint(e);
+  if (httpStatus === 503 || httpStatus === 429) return true;
+  if (rpcStatus === "UNAVAILABLE" || rpcStatus === "RESOURCE_EXHAUSTED" || rpcStatus === "DEADLINE_EXCEEDED") {
+    return true;
+  }
+  return /high demand|try again later|overloaded|rate limit|temporarily|unavailable|ECONNRESET|ETIMEDOUT/i.test(
+    text
+  );
+}
+
+function backoffMsWithJitter(attempt: number, baseMs: number, perAttemptCapMs: number): number {
+  const exp = baseMs * 2 ** Math.max(0, attempt - 1);
+  const capped = Math.min(perAttemptCapMs, exp);
+  const jitter = 0.85 + Math.random() * 0.3;
+  return Math.round(Math.min(perAttemptCapMs, capped * jitter));
+}
+
+async function withGeminiRetries<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  const maxAttempts = Math.min(10, Math.max(1, Number(process.env.GEMINI_MAX_RETRIES || 5)));
+  const baseMs = Math.min(60000, Math.max(400, Number(process.env.GEMINI_RETRY_BASE_MS || 2000)));
+  const perAttemptCapMs = Math.min(120000, Math.max(2000, Number(process.env.GEMINI_RETRY_MAX_MS || 45000)));
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (attempt === maxAttempts || !isTransientGeminiError(e)) throw e;
+      const wait = backoffMsWithJitter(attempt, baseMs, perAttemptCapMs);
+      const { httpStatus, rpcStatus } = geminiErrorFingerprint(e);
+      console.warn(
+        `[${label}] Gemini transient error (attempt ${attempt}/${maxAttempts}, status=${httpStatus ?? "?"}${
+          rpcStatus ? ` ${rpcStatus}` : ""
+        }), retry in ${wait}ms`
+      );
+      await delay(wait);
+    }
+  }
+  throw lastErr;
+}
+
 // --- GLOBAL STATE ---
 let globalState: any = {
   lastUpdated: new Date().toISOString(),
@@ -300,10 +393,12 @@ async function processIntelligence() {
       }
     `;
 
-    const result = await ai.models.generateContent({
-      model: "gemini-2.5-flash-lite",
-      contents: [{ role: "user", parts: [{ text: prompt }] }]
-    });
+    const result = await withGeminiRetries("Intelligence", () =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash-lite",
+        contents: [{ role: "user", parts: [{ text: prompt }] }]
+      })
+    );
 
     const text = result.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
 
@@ -405,13 +500,25 @@ async function startServer() {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) return res.status(401).json({ error: "No API Key" });
       const ai = new GoogleGenAI({ apiKey });
-      const result = await ai.models.generateContent({
-        model: "gemini-2.5-flash-lite",
-        contents: `Tactical briefing for: ${JSON.stringify(logEntry)}. Return bilingual JSON.`
-      });
+      const result = await withGeminiRetries("DeepDive", () =>
+        ai.models.generateContent({
+          model: "gemini-2.5-flash-lite",
+          contents: `Tactical briefing for: ${JSON.stringify(logEntry)}. Return bilingual JSON.`
+        })
+      );
       // @ts-ignore
       res.json(JSON.parse(result.text));
-    } catch (e) { res.status(500).json({ error: "Deep dive failed" }); }
+    } catch (e) {
+      console.error("[DeepDive]", e);
+      if (isTransientGeminiError(e)) {
+        return res.status(503).json({ error: "AI service temporarily busy. Please try again shortly." });
+      }
+      const { httpStatus } = geminiErrorFingerprint(e);
+      if (httpStatus === 401 || httpStatus === 403) {
+        return res.status(httpStatus).json({ error: "AI authentication failed" });
+      }
+      res.status(500).json({ error: "Deep dive failed" });
+    }
   });
 
   const distPath = path.join(process.cwd(), "dist");
