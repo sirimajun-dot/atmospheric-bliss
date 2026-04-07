@@ -4,7 +4,7 @@ This document prepares `Atmospheric Bliss` for production on Google Cloud Run wi
 
 ## Master plan & where to track progress
 
-**Single source of truth (SSOT):** this file — `CLOUDRUN_DEPLOY.md` at the **repository root** (`d:\cursor\Incom\03\CLOUDRUN_DEPLOY.md`).  
+**Single source of truth (SSOT):** this file — `CLOUDRUN_DEPLOY.md` at the **repository root** (same directory as `package.json` in your clone).  
 **How to use it:** after each phase, tick the roll-up boxes below and any bullets in §4.1 so the next person (or session) knows **where you left off**.
 
 | Phase | Section | What it covers |

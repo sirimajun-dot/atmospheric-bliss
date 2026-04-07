@@ -1,10 +1,12 @@
 import fs from "fs";
+import path from "path";
 import readline from "readline";
+import { fileURLToPath } from "url";
+import { repoRoot, resolveTranscriptJsonl, usageJsonl } from "./_transcriptEnv.mjs";
 
-const INPUT =
-  process.argv[2] ||
-  String.raw`C:\Users\DELL Latitude 3420\.cursor\projects\d-cursor-Incom-03\agent-transcripts\f574523d-7fd3-47f7-8b02-b6055c8203f1\f574523d-7fd3-47f7-8b02-b6055c8203f1.jsonl`;
-const OUT = process.argv[3] || "d:\\cursor\\Incom\\03\\cursor-transcript-read-manifest.txt";
+const INPUT = resolveTranscriptJsonl(process.argv[2]);
+if (!INPUT) usageJsonl(fileURLToPath(import.meta.url));
+const OUT = process.argv[3] || path.join(repoRoot, "cursor-transcript-read-manifest.txt");
 
 function stripUserQuery(s) {
   return s
@@ -20,6 +22,10 @@ function preview(s, max = 160) {
 }
 
 async function main() {
+  if (!fs.existsSync(INPUT)) {
+    console.error("Input not found:", INPUT);
+    process.exit(1);
+  }
   const rl = readline.createInterface({
     input: fs.createReadStream(INPUT, { encoding: "utf8" }),
     crlfDelay: Infinity,

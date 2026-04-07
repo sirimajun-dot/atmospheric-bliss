@@ -1,8 +1,10 @@
 import fs from "fs";
+import path from "path";
 import readline from "readline";
+import { repoRoot } from "./_transcriptEnv.mjs";
 
-const SRC = process.argv[2] || "d:\\cursor\\Incom\\03\\cursor-agent-transcript-full.txt";
-const OUT = process.argv[3] || "d:\\cursor\\Incom\\03\\cursor-transcript-dialogue-only.txt";
+const SRC = process.argv[2] || path.join(repoRoot, "cursor-agent-transcript-full.txt");
+const OUT = process.argv[3] || path.join(repoRoot, "cursor-transcript-dialogue-only.txt");
 
 /** If SRC is .jsonl, parse raw; else parse exported full txt blocks */
 async function fromJsonl(path) {
@@ -65,6 +67,10 @@ async function fromExportedTxt(path) {
 }
 
 async function main() {
+  if (!fs.existsSync(SRC)) {
+    console.error("Source not found:", SRC, "\nRun export-cursor-transcript.mjs first, or pass a .jsonl / exported .txt path.");
+    process.exit(1);
+  }
   const isJsonl = SRC.endsWith(".jsonl");
   const dialogue = isJsonl ? await fromJsonl(SRC) : await fromExportedTxt(SRC);
   const out = fs.createWriteStream(OUT, { encoding: "utf8" });
