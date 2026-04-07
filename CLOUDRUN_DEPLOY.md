@@ -16,6 +16,7 @@ This document prepares `Atmospheric Bliss` for production on Google Cloud Run wi
 | **E** | §5 | CIS-style operational baseline (audit, least privilege, patching) |
 | **F** | §6 | Legal / policy / incident readiness |
 | **G** | §7 | Scale tuning, ads/consent (optional backlog) |
+| **H** | §4.2 | Post-UAT: normalize 8 domains, findings scores, heuristics, dashboard UX (P1–P4) |
 
 ### Roll-up status (edit checkboxes as you complete each phase)
 
@@ -26,6 +27,7 @@ This document prepares `Atmospheric Bliss` for production on Google Cloud Run wi
 - [ ] **E** — CIS operational baseline (§5) — *console / process*
 - [ ] **F** — Legal & policy (§6) — *org documentation*
 - [ ] **G** — Scale & ads readiness (§7) — *when needed*
+- [ ] **H** — §4.2 backlog (P1→P4) — *after Phase D unless reprioritized*
 
 ### Repository implementation (already in codebase; does not replace §A–C on GCP)
 
@@ -45,6 +47,7 @@ Tick only if your deployed revision actually includes these commits.
 2. **Phase B** — §3 `gcloud builds submit --config cloudbuild.yaml` from the repo root, then §3.1 Firestore + `datastore.user`.
 3. **Phase C** — §4 smoke on `SERVICE_URL` (bash `curl` or PowerShell below).
 4. **Phase D** — §4.1 browser UAT; tick roll-up **D** when done.
+5. **After D** — §4.2 product/intelligence backlog (P1→P4); optional GitHub issues tagged `BACKLOG-P1` … `BACKLOG-P4`.
 
 ---
 
@@ -223,6 +226,24 @@ Checklist:
 - [ ] **UAT-4.1-radar** — Radar axes and series visible; legend readable; dark/light contrast acceptable
 
 When all §4.1 boxes are checked, mark **Phase D** complete in the roll-up at the top.
+
+### 4.2) Post-UAT product backlog — intelligence & UX (agreed execution order)
+
+**Gate:** start this backlog **after Phase D (§4.1) is complete** unless a stakeholder explicitly reprioritizes. Empty domains or missing sub-scores on the live service are **expected** until these items ship; they are not Cloud Run deploy blockers.
+
+**Rationale (short):** The UI (`ThreatDeepDive`, radar) assumes **eight domain IDs** and optional **`findings[].score`** for IDX badges. Today `report.risks` is mostly whatever Gemini returns, so sparse domains and findings without scores are a **contract gap**, not random “lost config.”
+
+**Do in this order (tick when done):**
+
+- [ ] **P1 — Normalize eight domains on the server** — After each intelligence parse, merge AI `risks[]` with a fixed list (`geopolitics`, `climate`, `ai`, `nature`, `cyber`, `bio`, `finance`, `social`): for any missing `id`, inject a placeholder row (e.g. sensible `score`/`threshold`, Thai/EN labels, `sourceName` like “รอสัญญาณจากแหล่งข้อมูล”) so the client always receives eight entries. Improves deep-insight screen and radar consistency. *Primary file: `server.ts`.*
+
+- [ ] **P2 — Prompt + JSON shape for sub-threat indices** — Extend the Gemini system prompt / example output so each `findings[]` item includes **`score` (0–100)** and **`severity`** (`low` | `medium` | `high` | `critical`) whenever there is a real event. Matches `src/types.ts` (`RiskFinding`) and unlocks the existing IDX chip in `ThreatDeepDive.tsx`. *Files: `server.ts`, optionally `src/types.ts` if tightening types.*
+
+- [ ] **P3 — Optional deterministic sub-scores** — For feeds with structured metrics (e.g. earthquake magnitude), compute a sub-`score` on the server so UX does not depend solely on the model for those rows. *File: `server.ts` (near ingest / post-process).*
+
+- [ ] **P4 — Main dashboard vs detail (product + UI)** — Decide whether the home “threat alerts” strip should show **aggregate/summary** vs **per-event rows**; then adjust components accordingly. *Requires product sign-off before large UI changes.*
+
+*Reference for issues/PRs:* `BACKLOG-P1` … `BACKLOG-P4`.
 
 ## 5) CIS Level 1 aligned controls (practical baseline)
 
