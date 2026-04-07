@@ -41,7 +41,7 @@ Tick only if your deployed revision actually includes these commits.
 
 ### Execution order (do this now on GCP)
 
-1. **Phase A** — Complete §1–2 (`gcloud config`, enable APIs, `GEMINI_API_KEY` secret + IAM).
+1. **Phase A** — Complete §1–2 (`gcloud config`, enable APIs, `GEMINI_API_KEY` secret + IAM), then **§2.1** (Artifact Registry repo + Cloud Build IAM).
 2. **Phase B** — §3 `gcloud builds submit --config cloudbuild.yaml` from the repo root, then §3.1 Firestore + `datastore.user`.
 3. **Phase C** — §4 smoke on `SERVICE_URL` (bash `curl` or PowerShell below).
 4. **Phase D** — §4.1 browser UAT; tick roll-up **D** when done.
@@ -57,12 +57,18 @@ Tick only if your deployed revision actually includes these commits.
   - Cloud Build API
   - Secret Manager API
   - Artifact Registry API
+  - Firestore API (for §3.1 persistence)
 
 ## 2) One-time project setup
 
 ```bash
 gcloud config set project YOUR_PROJECT_ID
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com artifactregistry.googleapis.com
+gcloud services enable \
+  run.googleapis.com \
+  cloudbuild.googleapis.com \
+  secretmanager.googleapis.com \
+  artifactregistry.googleapis.com \
+  firestore.googleapis.com
 ```
 
 Store Gemini key in Secret Manager:
@@ -80,6 +86,32 @@ gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
   --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
   --role="roles/secretmanager.secretAccessor"
 ```
+
+### 2.1) Artifact Registry + Cloud Build IAM (before first `gcloud builds submit`)
+
+`cloudbuild.yaml` pushes to **`asia-southeast1-docker.pkg.dev/$PROJECT_ID/app-images/...`** — create the Docker repo once (skip if it already exists):
+
+```bash
+gcloud artifacts repositories describe app-images --location=asia-southeast1 2>/dev/null || \
+  gcloud artifacts repositories create app-images \
+    --repository-format=docker \
+    --location=asia-southeast1 \
+    --description="Atmospheric Bliss images"
+```
+
+Grant the **Cloud Build default service account** permission to deploy Cloud Run and push images (replace `YOUR_PROJECT_ID` if not already the active config):
+
+```bash
+PROJECT_NUMBER=$(gcloud projects describe YOUR_PROJECT_ID --format='value(projectNumber)')
+CB_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+for ROLE in roles/run.admin roles/iam.serviceAccountUser roles/artifactregistry.writer; do
+  gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+    --member="serviceAccount:${CB_SA}" \
+    --role="${ROLE}"
+done
+```
+
+If deploy still fails on **secret** wiring, confirm the **runtime** account `${PROJECT_NUMBER}-compute@developer.gserviceaccount.com` has `roles/secretmanager.secretAccessor` on `GEMINI_API_KEY` (commands above in §2).
 
 **Optional (Google Sign-In on Cloud Run):** set runtime env in Cloud Run (or extend Cloud Build `--set-env-vars`) to include `AUTH_MODE=google` and `GOOGLE_OAUTH_CLIENT_ID=...`. In Google Cloud Console → APIs & Services → Credentials, add your Cloud Run URL to the OAuth client’s authorized JavaScript origins (and redirect URIs if applicable). See `.env.example` for related variables.
 
