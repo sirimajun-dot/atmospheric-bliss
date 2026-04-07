@@ -1,4 +1,5 @@
 import express from "express";
+import http from "http";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from 'url';
@@ -7,6 +8,7 @@ import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { getApps, initializeApp } from "firebase-admin/app";
 import { getFirestore, Firestore } from "firebase-admin/firestore";
+import { OAuth2Client } from "google-auth-library";
 
 dotenv.config();
 
@@ -99,15 +101,76 @@ async function withGeminiRetries<T>(label: string, fn: () => Promise<T>): Promis
       if (attempt === maxAttempts || !isTransientGeminiError(e)) throw e;
       const wait = backoffMsWithJitter(attempt, baseMs, perAttemptCapMs);
       const { httpStatus, rpcStatus } = geminiErrorFingerprint(e);
-      console.warn(
-        `[${label}] Gemini transient error (attempt ${attempt}/${maxAttempts}, status=${httpStatus ?? "?"}${
-          rpcStatus ? ` ${rpcStatus}` : ""
-        }), retry in ${wait}ms`
-      );
+      if (attempt === 1) {
+        console.warn(
+          `[${label}] Gemini transient (${httpStatus ?? "?"}${rpcStatus ? ` ${rpcStatus}` : ""}) — retrying up to ${maxAttempts} attempts with backoff`
+        );
+      }
       await delay(wait);
     }
   }
   throw lastErr;
+}
+
+/** Normalize `generateContent` output across SDK shapes (`candidates[].parts` vs legacy `.text`). */
+function geminiOutputText(result: unknown): string {
+  const r = result as {
+    candidates?: { content?: { parts?: { text?: string }[] } }[];
+    text?: string;
+  };
+  const parts = r.candidates?.[0]?.content?.parts;
+  if (Array.isArray(parts)) {
+    for (const p of parts) {
+      if (typeof p?.text === "string" && p.text.length > 0) return p.text;
+    }
+  }
+  if (typeof r.text === "string" && r.text.length > 0) return r.text;
+  return "";
+}
+
+/**
+ * First top-level `{ ... }` in `s`, respecting JSON double-quoted strings and `\` escapes.
+ * Greedy `/\{[\s\S]*\}/` would span from the first `{` to the last `}` and break when prose after the JSON contains `}`.
+ */
+function extractFirstBalancedJsonObject(s: string): string | null {
+  const start = s.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (inString) {
+      if (c === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      continue;
+    }
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return s.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+/** Strip optional markdown fences and parse the first JSON object (models sometimes add prose or fences). */
+function parseGeminiJsonObject(raw: string): unknown {
+  const cleaned = raw.replace(/```json\n?|```/g, "").trim();
+  const jsonSlice = extractFirstBalancedJsonObject(cleaned);
+  if (!jsonSlice) throw new Error("INVALID_AI_RESPONSE");
+  return JSON.parse(jsonSlice);
 }
 
 // --- GLOBAL STATE ---
@@ -133,7 +196,64 @@ const AUTHORIZED_SOURCES = [
   "OECD AIM", "Gemini 3 Intelligence", "FRED (St. Louis Fed)", "OFR Financial Stress", "IMF GFSR + WEO"
 ];
 
+const deepDiveHits = new Map<string, number[]>();
+const DEEP_DIVE_MAP_PRUNE_AT = 4000;
+let deepDiveRateLimitTicks = 0;
+
+function pruneStaleDeepDiveKeys(windowMs: number) {
+  const now = Date.now();
+  for (const [ip, stamps] of deepDiveHits) {
+    const fresh = stamps.filter((t) => now - t < windowMs);
+    if (fresh.length === 0) deepDiveHits.delete(ip);
+    else if (fresh.length !== stamps.length) deepDiveHits.set(ip, fresh);
+  }
+}
+
+function clientIpForRateLimit(req: express.Request): string {
+  const fwd = req.headers["x-forwarded-for"];
+  if (typeof fwd === "string" && fwd.length > 0) {
+    return fwd.split(",")[0]?.trim() || "unknown";
+  }
+  if (Array.isArray(fwd) && fwd[0]) {
+    return String(fwd[0]).split(",")[0].trim() || "unknown";
+  }
+  return req.socket.remoteAddress || "unknown";
+}
+
+function rateLimitDeepDive(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const windowMs = Math.max(5_000, Math.min(600_000, Number(process.env.DEEP_DIVE_WINDOW_MS || 60_000)));
+  const max = Math.max(1, Math.min(120, Number(process.env.DEEP_DIVE_MAX_PER_MINUTE || 20)));
+  const tick = ++deepDiveRateLimitTicks;
+  if (deepDiveHits.size > DEEP_DIVE_MAP_PRUNE_AT || tick % 200 === 0) {
+    pruneStaleDeepDiveKeys(windowMs);
+  }
+  const ip = clientIpForRateLimit(req);
+  const now = Date.now();
+  let stamps = deepDiveHits.get(ip) || [];
+  stamps = stamps.filter((t) => now - t < windowMs);
+  if (stamps.length >= max) {
+    res.setHeader("Retry-After", String(Math.ceil(windowMs / 1000)));
+    return res.status(429).json({ error: "Too many deep dive requests. Try again shortly." });
+  }
+  stamps.push(now);
+  deepDiveHits.set(ip, stamps);
+  next();
+}
+
+/** Background `processIntelligence` interval (ms). Clamped 60s–24h. Default 5m. */
+function tacticalPulseIntervalMs(): number {
+  const raw = Number(process.env.TACTICAL_PULSE_MS ?? "");
+  const fallback = 5 * 60 * 1000;
+  const n = Number.isFinite(raw) && raw > 0 ? raw : fallback;
+  return Math.max(60_000, Math.min(86_400_000, n));
+}
+
+function tacticalPulseLoopEnabled(): boolean {
+  return process.env.DISABLE_TACTICAL_PULSE !== "true";
+}
+
 let rawDataContext = "";
+let lastGdacsFailureLogAt = 0;
 let db: Firestore | null = null;
 const PERSISTENCE_COLLECTION = "system";
 const STATE_DOC_ID = "global_state";
@@ -236,6 +356,8 @@ async function fetchDataFeeds() {
           time: new Date(f.properties.time).toISOString()
         });
       });
+    } else {
+      statusUpdates["USGS Earthquake API"] = "unavailable";
     }
 
     // 2. CISA KEV (JSON)
@@ -255,6 +377,8 @@ async function fetchDataFeeds() {
           time: v.dateAdded ? new Date(v.dateAdded).toISOString() : new Date().toISOString()
         });
       });
+    } else {
+      statusUpdates["CISA KEV (API)"] = "unavailable";
     }
 
     // 3. GDACS (RSS) - Reliable Disaster Feed
@@ -273,7 +397,21 @@ async function fetchDataFeeds() {
           time: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString()
         });
       });
-    } catch (e) { console.error("GDACS Fetch Failed"); }
+    } catch (e) {
+      statusUpdates["GDACS (UN/EU)"] = "unavailable";
+      const now = Date.now();
+      const cooldown = Math.max(
+        120_000,
+        Math.min(24 * 60 * 60_000, Number(process.env.GDACS_FAILURE_LOG_COOLDOWN_MS || 1_800_000))
+      );
+      if (now - lastGdacsFailureLogAt >= cooldown) {
+        lastGdacsFailureLogAt = now;
+        const detail = e instanceof Error ? e.message : String(e);
+        console.warn(
+          `[GDACS] RSS fetch failed (${detail}). Suppressing repeat logs for ~${Math.round(cooldown / 60_000)}m (GDACS_FAILURE_LOG_COOLDOWN_MS).`
+        );
+      }
+    }
 
     // 4. Weather & Air Quality (Open-Meteo)
     try {
@@ -299,8 +437,13 @@ async function fetchDataFeeds() {
           condition: "Normal"
         };
         statusUpdates["TMD (กรมอุตุฯ)"] = 'fetched';
+      } else {
+        statusUpdates["TMD (กรมอุตุฯ)"] = "unavailable";
       }
-    } catch (e) { console.error("Weather Fetch Failed"); }
+    } catch (e) {
+      console.error("Weather Fetch Failed");
+      statusUpdates["TMD (กรมอุตุฯ)"] = "unavailable";
+    }
 
     rawDataContext = feeds.join("\n\n");
 
@@ -400,12 +543,8 @@ async function processIntelligence() {
       })
     );
 
-    const text = result.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("INVALID_AI_RESPONSE");
-
-    const analysis = JSON.parse(jsonMatch[0]);
+    const text = geminiOutputText(result) || "{}";
+    const analysis = parseGeminiJsonObject(text) as typeof globalState.report;
 
     globalState.report = analysis;
     globalState.lastUpdated = new Date().toISOString();
@@ -478,23 +617,179 @@ async function startServer() {
     res.status(ready ? 200 : 503).json({ ready, system: globalState.system });
   });
 
-  initFirestoreIfEnabled();
-  await loadStateFromFirestore();
+  // --- Access mode: public (default) | google (Google ID token + optional httpOnly cookie) ---
+  const googleOAuthClient = new OAuth2Client();
+  const AUTH_COOKIE_NAME = "ab_google_credential";
 
-  // --- ABSOLUTE API GUARD (FORCE PRIORITY) ---
-  app.use((req, res, next) => {
-    if (req.url.startsWith('/api/state')) {
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-      return res.json(globalState);
+  function parseCookie(req: express.Request, name: string): string | undefined {
+    const raw = req.headers.cookie;
+    if (!raw) return undefined;
+    for (const part of raw.split(";")) {
+      const i = part.indexOf("=");
+      if (i < 0) continue;
+      const k = part.slice(0, i).trim();
+      if (k === name) return decodeURIComponent(part.slice(i + 1).trim());
     }
-    if (req.url.startsWith('/api/ai/deep-dive')) {
-      return next(); // Let the post handler take it below
+    return undefined;
+  }
+
+  function authModeIsGoogle(): boolean {
+    return process.env.AUTH_MODE === "google";
+  }
+
+  function googleOAuthClientId(): string {
+    return process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || "";
+  }
+
+  async function verifyGoogleIdToken(
+    idToken: string
+  ): Promise<{ email: string; sub: string } | null> {
+    const aud = googleOAuthClientId();
+    if (!aud || !idToken) return null;
+    try {
+      const ticket = await googleOAuthClient.verifyIdToken({ idToken, audience: aud });
+      const payload = ticket.getPayload();
+      if (!payload?.email) return null;
+      if (payload.email_verified === false) return null;
+      const allowed = process.env.GOOGLE_ALLOWED_DOMAINS?.split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+      if (allowed?.length) {
+        const domain = (payload.email.split("@")[1] || "").toLowerCase();
+        const ok = allowed.some((d) => {
+          const base = d.startsWith(".") ? d.slice(1) : d;
+          return domain === base || domain.endsWith("." + base);
+        });
+        if (!ok) return null;
+      }
+      return { email: payload.email, sub: payload.sub || "" };
+    } catch {
+      return null;
+    }
+  }
+
+  function extractGoogleIdToken(req: express.Request): string | null {
+    const h = req.headers.authorization;
+    if (h?.startsWith("Bearer ")) return h.slice(7).trim();
+    const c = parseCookie(req, AUTH_COOKIE_NAME);
+    return c?.trim() || null;
+  }
+
+  app.get("/api/auth/status", async (req, res) => {
+    const mode = authModeIsGoogle() ? "google" : "public";
+    const clientId = googleOAuthClientId();
+    if (mode === "public") {
+      return res.json({ mode, authenticated: true, clientId: "" });
+    }
+    if (!clientId) {
+      return res.status(503).json({
+        mode,
+        authenticated: false,
+        clientId: "",
+        error: "GOOGLE_OAUTH_CLIENT_ID is not set",
+      });
+    }
+    const token = extractGoogleIdToken(req);
+    if (!token) {
+      return res.json({ mode, authenticated: false, clientId });
+    }
+    const user = await verifyGoogleIdToken(token);
+    if (!user) {
+      return res.json({ mode, authenticated: false, clientId });
+    }
+    res.json({ mode, authenticated: true, clientId, email: user.email });
+  });
+
+  app.post("/api/auth/session", async (req, res) => {
+    if (!authModeIsGoogle()) {
+      return res.status(400).json({ error: "AUTH_MODE is not google" });
+    }
+    const clientId = googleOAuthClientId();
+    if (!clientId) return res.status(503).json({ error: "Not configured" });
+    const credential = typeof req.body?.credential === "string" ? req.body.credential : "";
+    if (!credential) return res.status(400).json({ error: "missing credential" });
+    const user = await verifyGoogleIdToken(credential);
+    if (!user) return res.status(401).json({ error: "invalid credential" });
+    res.cookie(AUTH_COOKIE_NAME, credential, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 55 * 60 * 1000,
+      path: "/",
+    });
+    res.json({ ok: true, email: user.email });
+  });
+
+  app.post("/api/auth/logout", (_req, res) => {
+    res.clearCookie(AUTH_COOKIE_NAME, {
+      path: "/",
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+    });
+    res.json({ ok: true });
+  });
+
+  function pathIsApiState(req: express.Request): boolean {
+    const p = req.path || "";
+    return p === "/api/state" || p.startsWith("/api/state/");
+  }
+
+  function sendGlobalStateJson(res: express.Response) {
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.json(globalState);
+  }
+
+  // Public mode: /api/state before Google auth middleware (JSON first — avoids dev/static catching the path).
+  app.use((req, res, next) => {
+    if (authModeIsGoogle()) return next();
+    if (!pathIsApiState(req)) return next();
+    return sendGlobalStateJson(res);
+  });
+
+  app.use(async (req, res, next) => {
+    if (!authModeIsGoogle()) return next();
+    if (req.method === "OPTIONS") return next();
+    const p = req.path;
+    if (p === "/healthz" || p === "/readyz") return next();
+    if (!p.startsWith("/api/")) return next();
+    if (p.startsWith("/api/auth/")) return next();
+    const token = extractGoogleIdToken(req);
+    if (!token) {
+      res.setHeader("Content-Type", "application/json");
+      return res.status(401).json({ error: "Unauthorized", authRequired: true });
+    }
+    const user = await verifyGoogleIdToken(token);
+    if (!user) {
+      res.clearCookie(AUTH_COOKIE_NAME, {
+        path: "/",
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+      });
+      res.setHeader("Content-Type", "application/json");
+      return res.status(401).json({ error: "Unauthorized", authRequired: true });
     }
     next();
   });
 
-  app.post("/api/ai/deep-dive", async (req, res) => {
+  initFirestoreIfEnabled();
+  await loadStateFromFirestore();
+
+  // Google mode: /api/state only after the session middleware above (still JSON — not Vite/HTML).
+  app.use((req, res, next) => {
+    if (!authModeIsGoogle()) return next();
+    if (!pathIsApiState(req)) return next();
+    return sendGlobalStateJson(res);
+  });
+
+  app.use((req, res, next) => {
+    if (req.url.startsWith("/api/ai/deep-dive")) return next();
+    next();
+  });
+
+  app.post("/api/ai/deep-dive", rateLimitDeepDive, async (req, res) => {
     try {
       const { logEntry } = req.body;
       const apiKey = process.env.GEMINI_API_KEY;
@@ -503,11 +798,27 @@ async function startServer() {
       const result = await withGeminiRetries("DeepDive", () =>
         ai.models.generateContent({
           model: "gemini-2.5-flash-lite",
-          contents: `Tactical briefing for: ${JSON.stringify(logEntry)}. Return bilingual JSON.`
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: `Tactical briefing for: ${JSON.stringify(logEntry)}. Return bilingual JSON.`,
+                },
+              ],
+            },
+          ],
         })
       );
-      // @ts-ignore
-      res.json(JSON.parse(result.text));
+      const text = geminiOutputText(result);
+      if (!text.trim()) {
+        return res.status(502).json({ error: "Empty AI response" });
+      }
+      try {
+        res.json(parseGeminiJsonObject(text));
+      } catch {
+        return res.status(502).json({ error: "AI returned invalid JSON" });
+      }
     } catch (e) {
       console.error("[DeepDive]", e);
       if (isTransientGeminiError(e)) {
@@ -526,6 +837,9 @@ async function startServer() {
 
   const isProduction = process.env.NODE_ENV === 'production';
 
+  /** Same TCP port for HTML + API + Vite HMR (LAN/mobile dev); avoids random HMR port blocked by firewall. */
+  const httpServer = http.createServer(app);
+
   if (isProduction && fs.existsSync(indexPath)) {
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
@@ -533,16 +847,20 @@ async function startServer() {
       res.sendFile(indexPath);
     });
   } else {
-    // Force development mode via Vite
     const { createServer: createViteServer } = await import("vite");
+    const disableHmr = process.env.DISABLE_HMR === "true";
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: { port: 3334 + Math.floor(Math.random() * 1000) }
+        hmr: disableHmr ? false : { server: httpServer },
       },
       appType: "custom"
     });
-    app.use(vite.middlewares);
+    app.use((req, res, next) => {
+      const pathOnly = req.originalUrl.split("?")[0] || "";
+      if (pathOnly.startsWith("/api")) return next();
+      return vite.middlewares(req, res, next);
+    });
 
     app.get('*', async (req, res, next) => {
       if (req.path.startsWith('/api')) return next();
@@ -554,17 +872,22 @@ async function startServer() {
     });
   }
 
-  app.listen(Number(PORT), "0.0.0.0", () => {
+  httpServer.listen(Number(PORT), "0.0.0.0", () => {
     console.log(`[White Bliss Engine] Operational on Port ${PORT} // API Guard Enabled`);
 
-    // Initial Scan
     processIntelligence();
 
-    // --- BACKGROUND TACTICAL PULSE (Every 5 minutes) ---
-    console.log("[SYSTEM] Starting 5-minute Tactical Pulse background monitoring...");
-    setInterval(() => {
-      processIntelligence();
-    }, 5 * 60 * 1000);
+    const pulseMs = tacticalPulseIntervalMs();
+    if (tacticalPulseLoopEnabled()) {
+      console.log(
+        `[SYSTEM] Tactical Pulse every ${Math.round(pulseMs / 1000)}s (set TACTICAL_PULSE_MS / DISABLE_TACTICAL_PULSE to adjust)`
+      );
+      setInterval(() => {
+        processIntelligence();
+      }, pulseMs);
+    } else {
+      console.log("[SYSTEM] Tactical Pulse loop off (DISABLE_TACTICAL_PULSE=true); initial scan already ran.");
+    }
   });
 }
 
