@@ -36,9 +36,9 @@ steps:
       - '--max-instances'
       - '$_MAX_INSTANCES'
       - '--set-env-vars'
-      - 'NODE_ENV=production,MAX_JSON_BODY=256kb,ENABLE_FIRESTORE_PERSISTENCE=true'
+      - 'NODE_ENV=production,MAX_JSON_BODY=256kb,ENABLE_FIRESTORE_PERSISTENCE=true,AUTH_MODE=google'
       - '--set-secrets'
-      - 'GEMINI_API_KEY=GEMINI_API_KEY:latest'
+      - 'GEMINI_API_KEY=GEMINI_API_KEY:latest,GOOGLE_OAUTH_CLIENT_ID=GOOGLE_OAUTH_CLIENT_ID:latest'
       - '--labels'
       - 'service=atmospheric-bliss,env=prod'
 

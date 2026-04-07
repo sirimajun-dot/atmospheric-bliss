@@ -90,6 +90,35 @@ gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
   --role="roles/secretmanager.secretAccessor"
 ```
 
+### 2.0a) Google Sign-In — OAuth Web Client ID (required for current `cloudbuild.yaml`)
+
+The default **`cloudbuild.yaml`** deploys with **`AUTH_MODE=google`** and mounts the **Web** OAuth client ID from Secret Manager as **`GOOGLE_OAUTH_CLIENT_ID`** (same variable the server reads). Create the OAuth client and secret **before** the next `gcloud builds submit`, or the deploy step will fail when wiring secrets.
+
+1. **Google Cloud Console** → **APIs & Services** → **Credentials** → **Create credentials** → **OAuth client ID** → type **Web application**.  
+2. **Authorized JavaScript origins:** add your Cloud Run URL, e.g. `https://atmospheric-bliss-XXXXX.asia-southeast1.run.app` (no path; use your real hostname from `gcloud run services describe`).  
+3. **Authorized redirect URIs:** usually not required for GIS One Tap / button on the same origin; add only if your flow uses redirects.
+
+Store **only** the client id string (ends with `.apps.googleusercontent.com`), not the client secret, in Secret Manager:
+
+```bash
+PROJECT_ID=$(gcloud config get-value project)
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+CB_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+
+echo -n "YOUR_CLIENT_ID.apps.googleusercontent.com" | gcloud secrets create GOOGLE_OAUTH_CLIENT_ID --data-file=- 2>/dev/null || \
+  echo -n "YOUR_CLIENT_ID.apps.googleusercontent.com" | gcloud secrets versions add GOOGLE_OAUTH_CLIENT_ID --data-file=-
+
+for MEM in "serviceAccount:${RUNTIME_SA}" "serviceAccount:${CB_SA}"; do
+  gcloud secrets add-iam-policy-binding GOOGLE_OAUTH_CLIENT_ID \
+    --member="$MEM" --role="roles/secretmanager.secretAccessor" --quiet 2>/dev/null || true
+done
+```
+
+Grant **Cloud Build** access so the deploy step can attach the secret to Cloud Run (if not already project-wide). The loop above adds both runtime and Cloud Build SAs. If a binding already exists, errors are ignored.
+
+**Public mode again:** change `cloudbuild.yaml` to remove `AUTH_MODE=google` and `GOOGLE_OAUTH_CLIENT_ID=...` from `--set-env-vars` / `--set-secrets`, then redeploy.
+
 ### 2.1) Artifact Registry + Cloud Build IAM (before first `gcloud builds submit`)
 
 `cloudbuild.yaml` pushes to **`asia-southeast1-docker.pkg.dev/$PROJECT_ID/app-images/...`** — create the Docker repo once (skip if it already exists):
@@ -114,9 +143,7 @@ for ROLE in roles/run.admin roles/iam.serviceAccountUser roles/artifactregistry.
 done
 ```
 
-If deploy still fails on **secret** wiring, confirm the **runtime** account `${PROJECT_NUMBER}-compute@developer.gserviceaccount.com` has `roles/secretmanager.secretAccessor` on `GEMINI_API_KEY` (commands above in §2).
-
-**Optional (Google Sign-In on Cloud Run):** set runtime env in Cloud Run (or extend Cloud Build `--set-env-vars`) to include `AUTH_MODE=google` and `GOOGLE_OAUTH_CLIENT_ID=...`. In Google Cloud Console → APIs & Services → Credentials, add your Cloud Run URL to the OAuth client’s authorized JavaScript origins (and redirect URIs if applicable). See `.env.example` for related variables.
+If deploy still fails on **secret** wiring, confirm the **runtime** account `${PROJECT_NUMBER}-compute@developer.gserviceaccount.com` has `roles/secretmanager.secretAccessor` on **`GEMINI_API_KEY`** and **`GOOGLE_OAUTH_CLIENT_ID`** (see §2.0a). Cloud Build’s default SA may also need **secretAccessor** on those secrets to complete `gcloud run deploy`.
 
 ## 3) Deploy via Cloud Build
 
@@ -129,7 +156,7 @@ The current `cloudbuild.yaml` deploys with:
 - Gen2 execution environment
 - Autoscaling: `min=0`, `max` = Cloud Build substitution **`_MAX_INSTANCES`** (default **`1`** in the repo — one Node process avoids duplicate Gemini/Firestore background work). Override at submit time, e.g. `--substitutions=_MAX_INSTANCES=3`
 - Bounded resources (`1 vCPU`, `512Mi`, `timeout 60s`) — confirm in `cloudbuild.yaml` if you change them
-- Runtime secrets from Secret Manager
+- **`AUTH_MODE=google`** with secrets **`GEMINI_API_KEY`** and **`GOOGLE_OAUTH_CLIENT_ID`** from Secret Manager (see §2.0a)
 - Firestore-backed state persistence (`ENABLE_FIRESTORE_PERSISTENCE=true`)
 
 ## 3.1) Firestore setup (restart-safe state)
