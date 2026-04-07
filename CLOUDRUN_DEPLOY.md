@@ -17,6 +17,7 @@ This document prepares `Atmospheric Bliss` for production on Google Cloud Run wi
 | **F** | §6 | Legal / policy / incident readiness |
 | **G** | §7 | Scale tuning, ads/consent (optional backlog) |
 | **H** | §4.2 | Post-UAT: normalize 8 domains, findings scores, heuristics, dashboard UX (P1–P4) |
+| **I** | §7.1 | **Deferred:** Google Sign-In on Cloud Run (OAuth client, secret, patch `cloudbuild`) — after Phase G when team chooses |
 
 ### Roll-up status (edit checkboxes as you complete each phase)
 
@@ -28,6 +29,7 @@ This document prepares `Atmospheric Bliss` for production on Google Cloud Run wi
 - [ ] **F** — Legal & policy (§6) — *org documentation*
 - [ ] **G** — Scale & ads readiness (§7) — *when needed*
 - [ ] **H** — §4.2 backlog (P1→P4) — *after Phase D unless reprioritized*
+- [ ] **I** — Google Sign-In §7.1 — *deferred until after Phase G (default deploy stays public)*
 
 ### Repository implementation (already in codebase; does not replace §A–C on GCP)
 
@@ -48,6 +50,7 @@ Tick only if your deployed revision actually includes these commits.
 3. **Phase C** — §4 smoke on `SERVICE_URL` (bash `curl` or PowerShell below).
 4. **Phase D** — §4.1 browser UAT; tick roll-up **D** when done.
 5. **After D** — §4.2 product/intelligence backlog (P1→P4); optional GitHub issues tagged `BACKLOG-P1` … `BACKLOG-P4`.
+6. **After G (deferred)** — §7.1 **Google Sign-In** only when the team is ready; default **`cloudbuild.yaml`** keeps **`AUTH_MODE` public** (no OAuth secret required for deploy). Tick roll-up **I** when done.
 
 ---
 
@@ -90,34 +93,7 @@ gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
   --role="roles/secretmanager.secretAccessor"
 ```
 
-### 2.0a) Google Sign-In — OAuth Web Client ID (required for current `cloudbuild.yaml`)
-
-The default **`cloudbuild.yaml`** deploys with **`AUTH_MODE=google`** and mounts the **Web** OAuth client ID from Secret Manager as **`GOOGLE_OAUTH_CLIENT_ID`** (same variable the server reads). Create the OAuth client and secret **before** the next `gcloud builds submit`, or the deploy step will fail when wiring secrets.
-
-1. **Google Cloud Console** → **APIs & Services** → **Credentials** → **Create credentials** → **OAuth client ID** → type **Web application**.  
-2. **Authorized JavaScript origins:** add your Cloud Run URL, e.g. `https://atmospheric-bliss-XXXXX.asia-southeast1.run.app` (no path; use your real hostname from `gcloud run services describe`).  
-3. **Authorized redirect URIs:** usually not required for GIS One Tap / button on the same origin; add only if your flow uses redirects.
-
-Store **only** the client id string (ends with `.apps.googleusercontent.com`), not the client secret, in Secret Manager:
-
-```bash
-PROJECT_ID=$(gcloud config get-value project)
-PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
-RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-CB_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
-
-echo -n "YOUR_CLIENT_ID.apps.googleusercontent.com" | gcloud secrets create GOOGLE_OAUTH_CLIENT_ID --data-file=- 2>/dev/null || \
-  echo -n "YOUR_CLIENT_ID.apps.googleusercontent.com" | gcloud secrets versions add GOOGLE_OAUTH_CLIENT_ID --data-file=-
-
-for MEM in "serviceAccount:${RUNTIME_SA}" "serviceAccount:${CB_SA}"; do
-  gcloud secrets add-iam-policy-binding GOOGLE_OAUTH_CLIENT_ID \
-    --member="$MEM" --role="roles/secretmanager.secretAccessor" --quiet 2>/dev/null || true
-done
-```
-
-Grant **Cloud Build** access so the deploy step can attach the secret to Cloud Run (if not already project-wide). The loop above adds both runtime and Cloud Build SAs. If a binding already exists, errors are ignored.
-
-**Public mode again:** change `cloudbuild.yaml` to remove `AUTH_MODE=google` and `GOOGLE_OAUTH_CLIENT_ID=...` from `--set-env-vars` / `--set-secrets`, then redeploy.
+**Google Sign-In:** deferred to **§7.1 (Phase I)** after Phase G — not required for the default `cloudbuild.yaml` (public API).
 
 ### 2.1) Artifact Registry + Cloud Build IAM (before first `gcloud builds submit`)
 
@@ -143,7 +119,7 @@ for ROLE in roles/run.admin roles/iam.serviceAccountUser roles/artifactregistry.
 done
 ```
 
-If deploy still fails on **secret** wiring, confirm the **runtime** account `${PROJECT_NUMBER}-compute@developer.gserviceaccount.com` has `roles/secretmanager.secretAccessor` on **`GEMINI_API_KEY`** and **`GOOGLE_OAUTH_CLIENT_ID`** (see §2.0a). Cloud Build’s default SA may also need **secretAccessor** on those secrets to complete `gcloud run deploy`.
+If deploy still fails on **secret** wiring, confirm the **runtime** account `${PROJECT_NUMBER}-compute@developer.gserviceaccount.com` has `roles/secretmanager.secretAccessor` on **`GEMINI_API_KEY`**. If you enable Google Sign-In (§7.1), add the same role on **`GOOGLE_OAUTH_CLIENT_ID`** for the runtime SA and usually for the Cloud Build default SA so deploy can attach the secret.
 
 ## 3) Deploy via Cloud Build
 
@@ -156,7 +132,7 @@ The current `cloudbuild.yaml` deploys with:
 - Gen2 execution environment
 - Autoscaling: `min=0`, `max` = Cloud Build substitution **`_MAX_INSTANCES`** (default **`1`** in the repo — one Node process avoids duplicate Gemini/Firestore background work). Override at submit time, e.g. `--substitutions=_MAX_INSTANCES=3`
 - Bounded resources (`1 vCPU`, `512Mi`, `timeout 60s`) — confirm in `cloudbuild.yaml` if you change them
-- **`AUTH_MODE=google`** with secrets **`GEMINI_API_KEY`** and **`GOOGLE_OAUTH_CLIENT_ID`** from Secret Manager (see §2.0a)
+- Runtime secret **`GEMINI_API_KEY`** from Secret Manager; **public** auth by default (no OAuth secret). Optional **Google Sign-In:** §7.1 (Phase I).
 - Firestore-backed state persistence (`ENABLE_FIRESTORE_PERSISTENCE=true`)
 
 ## 3.1) Firestore setup (restart-safe state)
@@ -308,3 +284,37 @@ When all §4.1 boxes are checked, mark **Phase D** complete in the roll-up at th
   - add a dedicated config flag (for consent-aware ad rendering)
   - gate ad scripts by locale and consent status
   - isolate ad network failures so dashboard still functions
+
+## 7.1) Optional: Google Sign-In on Cloud Run (Phase I — after Phase G, team decision)
+
+**When:** Run this **after Phase G** (or whenever the product team chooses). Until then, keep the repo **`cloudbuild.yaml`** on **public** mode so `gcloud builds submit` does not require an OAuth client secret.
+
+**Steps:**
+
+1. **Console** → **APIs & Services** → **Credentials** → **OAuth client ID** → **Web application**.  
+2. **Authorized JavaScript origins:** your Cloud Run URL, e.g. `https://atmospheric-bliss-XXXXX.asia-southeast1.run.app` (from `gcloud run services describe`).  
+3. Create Secret Manager secret **`GOOGLE_OAUTH_CLIENT_ID`** with **only** the client id string (ends with `.apps.googleusercontent.com`):
+
+```bash
+PROJECT_ID=$(gcloud config get-value project)
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+CB_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+
+echo -n "YOUR_CLIENT_ID.apps.googleusercontent.com" | gcloud secrets create GOOGLE_OAUTH_CLIENT_ID --data-file=- 2>/dev/null || \
+  echo -n "YOUR_CLIENT_ID.apps.googleusercontent.com" | gcloud secrets versions add GOOGLE_OAUTH_CLIENT_ID --data-file=-
+
+for MEM in "serviceAccount:${RUNTIME_SA}" "serviceAccount:${CB_SA}"; do
+  gcloud secrets add-iam-policy-binding GOOGLE_OAUTH_CLIENT_ID \
+    --member="$MEM" --role="roles/secretmanager.secretAccessor" --quiet 2>/dev/null || true
+done
+```
+
+4. **Patch `cloudbuild.yaml`** (then commit): in the deploy step, add **`AUTH_MODE=google`** to `--set-env-vars` (comma-separated with existing vars) and extend `--set-secrets` to  
+   `GEMINI_API_KEY=GEMINI_API_KEY:latest,GOOGLE_OAUTH_CLIENT_ID=GOOGLE_OAUTH_CLIENT_ID:latest`.
+
+5. **`gcloud builds submit --config cloudbuild.yaml`** — re-run smoke (§4); unauthenticated `/api/state` should return **401** JSON; confirm in browser after login.
+
+6. Tick roll-up **Phase I** at the top of this file.
+
+**Revert to public:** remove `AUTH_MODE=google` and the `GOOGLE_OAUTH_CLIENT_ID` entry from `--set-secrets`, redeploy.
