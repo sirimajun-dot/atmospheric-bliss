@@ -9,7 +9,7 @@ This document prepares `Atmospheric Bliss` for production on Google Cloud Run wi
 
 | Phase | Section | What it covers |
 |-------|---------|----------------|
-| **A** | §1–2 | GCP project, APIs, Secret Manager, IAM for Gemini secret |
+| **A** | §1–2, §2.1 | GCP project, APIs, Secret Manager, IAM, Artifact Registry, Cloud Build SA |
 | **B** | §3–3.1 | Cloud Build deploy, Firestore + `datastore.user` |
 | **C** | §4 | Automated smoke (`curl` / JSON) on the live service URL |
 | **D** | §4.1 | Browser UAT: all surfaces, ingestion signals, alerts, deep dive, UX/UI, radar |
@@ -19,7 +19,7 @@ This document prepares `Atmospheric Bliss` for production on Google Cloud Run wi
 
 ### Roll-up status (edit checkboxes as you complete each phase)
 
-- [ ] **A** — Prerequisites & secrets (§1–2) — *your GCP project*
+- [ ] **A** — Prerequisites & secrets + §2.1 (§1–2, §2.1) — *your GCP project*
 - [ ] **B** — Deploy + Firestore (§3–3.1) — *successful `gcloud builds submit` + DB*
 - [ ] **C** — Post-deploy smoke (§4) — *curl checks on Cloud Run URL*
 - [ ] **D** — Browser / product UAT (§4.1) — *run only after §4 passes*
@@ -172,6 +172,14 @@ curl.exe -sS -o NUL -w "%{http_code}`n" "$SERVICE_URL/api/state"
 ```
 
 The last line prints **200** (public) or **401** (google mode without session). `healthz` / `readyz` should still return JSON.
+
+**One-shot script (template):** from repo root, after `gcloud` is logged in and project is set:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "scripts\cloud-run-smoke.ps1.example" -ProjectId "YOUR_PROJECT_ID"
+```
+
+Or `-ServiceUrl "https://....run.app"` to skip `gcloud run services describe`.
 
 ### 4.0.1) Optional: public / internal ingress toggles (Windows)
 

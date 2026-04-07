@@ -1,0 +1,68 @@
+# Phase C smoke: healthz, readyz, /api/state HTTP code (matches CLOUDRUN_DEPLOY.md §4 / §4.0)
+# Requires: gcloud authenticated; active project must own the Cloud Run service (or use -ProjectId).
+#
+#   powershell -ExecutionPolicy Bypass -File "scripts\cloud-run-smoke.ps1.example"
+#   powershell -ExecutionPolicy Bypass -File "scripts\cloud-run-smoke.ps1.example" -ProjectId "my-project" -Service "atmospheric-bliss" -Region "asia-southeast1"
+# Or pass URL only (no gcloud describe):
+#   powershell -ExecutionPolicy Bypass -File "scripts\cloud-run-smoke.ps1.example" -ServiceUrl "https://....run.app"
+
+param(
+  [string]$ProjectId = "",
+  [string]$Service = "atmospheric-bliss",
+  [string]$Region = "asia-southeast1",
+  [string]$ServiceUrl = ""
+)
+
+$ErrorActionPreference = "Stop"
+
+function EnsureGcloud {
+  if (Get-Command gcloud -ErrorAction SilentlyContinue) { return }
+  foreach ($d in @(
+      "$env:LOCALAPPDATA\Google\Cloud SDK\google-cloud-sdk\bin",
+      "$env:ProgramFiles\Google\Cloud SDK\google-cloud-sdk\bin",
+      "${env:ProgramFiles(x86)}\Google\Cloud SDK\google-cloud-sdk\bin"
+    )) {
+    if ($d -and (Test-Path (Join-Path $d "gcloud.cmd"))) {
+      $env:Path = "$d;$env:Path"
+      break
+    }
+  }
+  if (-not (Get-Command gcloud -ErrorAction SilentlyContinue)) {
+    throw "gcloud not found. Install Google Cloud SDK or add it to PATH."
+  }
+}
+
+if ($ProjectId) {
+  EnsureGcloud
+  gcloud config set project $ProjectId 2>$null | Out-Null
+}
+
+if (-not $ServiceUrl) {
+  EnsureGcloud
+  $ServiceUrl = (gcloud run services describe $Service --region $Region --format="value(status.url)").Trim()
+  if (-not $ServiceUrl) { throw "Empty SERVICE_URL — check service name, region, and gcloud project." }
+}
+
+$ServiceUrl = $ServiceUrl.TrimEnd("/")
+Write-Host "=== Cloud Run smoke ===" -ForegroundColor Cyan
+Write-Host "URL: $ServiceUrl"
+
+Write-Host "`nGET /healthz"
+$h = Invoke-RestMethod -Uri "$ServiceUrl/healthz" -Method Get
+$h | ConvertTo-Json -Compress | Write-Host
+
+Write-Host "`nGET /readyz"
+$r = Invoke-RestMethod -Uri "$ServiceUrl/readyz" -Method Get
+$r | ConvertTo-Json -Compress | Write-Host
+
+Write-Host "`nGET /api/state (HTTP status only)"
+$stateCode = curl.exe -sS -o NUL -w "%{http_code}" "$ServiceUrl/api/state"
+Write-Host "HTTP $stateCode  (expect 200 if public, 401 if google auth without session)"
+
+if ($stateCode -notmatch "^(200|401)$") {
+  Write-Host "Unexpected /api/state status — investigate before Phase D UAT." -ForegroundColor Yellow
+  exit 1
+}
+
+Write-Host "`nSmoke finished OK for Phase C gate (health + expected state code)." -ForegroundColor Green
+exit 0
