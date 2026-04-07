@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Terminal, Filter, X, Sparkles, Loader2, ChevronRight, CheckCircle2 } from 'lucide-react';
+import { Terminal, Filter, X, Sparkles, Loader2, ChevronRight, CheckCircle2, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -19,6 +19,7 @@ export const RiskDetailCard: React.FC<Props> = ({ logs = [], onRemove, language 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deepDives, setDeepDives] = useState<Record<string, any>>({});
   const [loadingIds, setLoadingIds] = useState<Record<string, boolean>>({});
+  const [deepDiveErrors, setDeepDiveErrors] = useState<Record<string, string>>({});
 
   const safeLogs = Array.isArray(logs) ? logs : [];
   const filteredLogs = filter30m 
@@ -29,18 +30,60 @@ export const RiskDetailCard: React.FC<Props> = ({ logs = [], onRemove, language 
     if (deepDives[log.id] || loadingIds[log.id]) return;
 
     setLoadingIds(prev => ({ ...prev, [log.id]: true }));
+    setDeepDiveErrors((prev) => {
+      const next = { ...prev };
+      delete next[log.id];
+      return next;
+    });
     try {
       const response = await fetch('/api/ai/deep-dive', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ logEntry: log })
       });
       if (response.ok) {
         const result = await response.json();
         setDeepDives(prev => ({ ...prev, [log.id]: result }));
+        return;
       }
+      let message =
+        language === 'th'
+          ? 'ไม่สามารถโหลดคำแนะนำเจาะลึกได้'
+          : 'Could not load deep briefing';
+      try {
+        const j = (await response.json()) as { error?: string };
+        if (response.status === 429) {
+          message =
+            language === 'th'
+              ? 'เรียกบริการถี่เกินไป กรุณารอสักครู่แล้วลองใหม่'
+              : 'Too many requests. Please wait and try again.';
+        } else if (response.status === 503) {
+          message =
+            language === 'th'
+              ? 'บริการ AI ไม่พร้อมชั่วคราว ลองใหม่ภายหลัง'
+              : 'AI is temporarily busy. Try again shortly.';
+        } else if (response.status === 502) {
+          message =
+            language === 'th'
+              ? 'คำตอบจาก AI ไม่สมบูรณ์ ลองใหม่อีกครั้ง'
+              : 'The AI returned an incomplete response. Please try again.';
+        } else if (j?.error && typeof j.error === 'string') {
+          message = j.error;
+        }
+      } catch {
+        /* use default message */
+      }
+      setDeepDiveErrors((prev) => ({ ...prev, [log.id]: message }));
     } catch (err) {
       console.error("[Deep Dive Error]", err);
+      setDeepDiveErrors((prev) => ({
+        ...prev,
+        [log.id]:
+          language === 'th'
+            ? 'เครือข่ายขัดข้อง ลองใหม่ภายหลัง'
+            : 'Network error. Try again later.',
+      }));
     } finally {
       setLoadingIds(prev => ({ ...prev, [log.id]: false }));
     }
@@ -113,6 +156,13 @@ export const RiskDetailCard: React.FC<Props> = ({ logs = [], onRemove, language 
                     animate={{ opacity: 1, height: 'auto' }}
                     className="mt-4 pt-4 border-t border-indigo-50 space-y-4"
                   >
+                    {deepDiveErrors[log.id] && (
+                      <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-50 border border-amber-100 text-amber-900">
+                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+                        <p className="text-[10px] font-bold leading-relaxed">{deepDiveErrors[log.id]}</p>
+                      </div>
+                    )}
+
                     {!deepDives[log.id] && (
                       <button 
                         onClick={(e) => { e.stopPropagation(); handleDeepDive(log); }}

@@ -44,7 +44,7 @@ export const useRiskData = () => {
             }
 
             const bust = Date.now();
-            const response = await fetch(`/api/state?t=${bust}`);
+            const response = await fetch(`/api/state?t=${bust}`, { credentials: "include" });
             
             const contentType = response.headers.get("content-type");
             if (!contentType || !contentType.includes("application/json")) {

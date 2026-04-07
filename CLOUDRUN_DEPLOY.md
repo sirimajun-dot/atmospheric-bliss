@@ -2,6 +2,45 @@
 
 This document prepares `Atmospheric Bliss` for production on Google Cloud Run with a CIS-style Level 1 baseline.
 
+## Master plan & where to track progress
+
+**Single source of truth (SSOT):** this file — `CLOUDRUN_DEPLOY.md` at the **repository root** (`d:\cursor\Incom\03\CLOUDRUN_DEPLOY.md`).  
+**How to use it:** after each phase, tick the roll-up boxes below and any bullets in §4.1 so the next person (or session) knows **where you left off**.
+
+| Phase | Section | What it covers |
+|-------|---------|----------------|
+| **A** | §1–2 | GCP project, APIs, Secret Manager, IAM for Gemini secret |
+| **B** | §3–3.1 | Cloud Build deploy, Firestore + `datastore.user` |
+| **C** | §4 | Automated smoke (`curl` / JSON) on the live service URL |
+| **D** | §4.1 | Browser UAT: all surfaces, ingestion signals, alerts, deep dive, UX/UI, radar |
+| **E** | §5 | CIS-style operational baseline (audit, least privilege, patching) |
+| **F** | §6 | Legal / policy / incident readiness |
+| **G** | §7 | Scale tuning, ads/consent (optional backlog) |
+
+### Roll-up status (edit checkboxes as you complete each phase)
+
+- [ ] **A** — Prerequisites & secrets (§1–2) — *your GCP project*
+- [ ] **B** — Deploy + Firestore (§3–3.1) — *successful `gcloud builds submit` + DB*
+- [ ] **C** — Post-deploy smoke (§4) — *curl checks on Cloud Run URL*
+- [ ] **D** — Browser / product UAT (§4.1) — *run only after §4 passes*
+- [ ] **E** — CIS operational baseline (§5) — *console / process*
+- [ ] **F** — Legal & policy (§6) — *org documentation*
+- [ ] **G** — Scale & ads readiness (§7) — *when needed*
+
+### Repository implementation (already in codebase; does not replace §A–C on GCP)
+
+Tick only if your deployed revision actually includes these commits.
+
+- [x] Cloud Run container: default listen port via `Dockerfile` (`ENV PORT=8080`)
+- [x] `cloudbuild.yaml`: `--max-instances` from substitution `_MAX_INSTANCES` (default `1`); raising it can duplicate the background intelligence loop — override only deliberately (`--substitutions=_MAX_INSTANCES=N`)
+- [x] Optional Google Sign-In: `AUTH_MODE=google`, `GOOGLE_OAUTH_CLIENT_ID`, `/api/auth/*`, httpOnly cookie + Bearer for `/api/*` (except auth & health)
+- [x] Server: Gemini text/JSON handling, deep-dive rate limit, tactical pulse env (`TACTICAL_PULSE_MS`, `DISABLE_TACTICAL_PULSE`), feed `unavailable` status
+- [x] Client: `credentials: 'include'` on `/api/state` and deep-dive; `GoogleAuthGate`; API status table + deep-dive error display
+
+*After a major merge, re-open this list and adjust if behavior changed.*
+
+---
+
 ## 1) Prerequisites
 
 - Google Cloud project with billing enabled
@@ -35,6 +74,8 @@ gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
   --role="roles/secretmanager.secretAccessor"
 ```
 
+**Optional (Google Sign-In on Cloud Run):** set runtime env in Cloud Run (or extend Cloud Build `--set-env-vars`) to include `AUTH_MODE=google` and `GOOGLE_OAUTH_CLIENT_ID=...`. In Google Cloud Console → APIs & Services → Credentials, add your Cloud Run URL to the OAuth client’s authorized JavaScript origins (and redirect URIs if applicable). See `.env.example` for related variables.
+
 ## 3) Deploy via Cloud Build
 
 ```bash
@@ -42,10 +83,11 @@ gcloud builds submit --config cloudbuild.yaml
 ```
 
 The current `cloudbuild.yaml` deploys with:
+
 - Gen2 execution environment
-- autoscaling baseline (`min=0`, `max=20`)
-- bounded resources (`1 vCPU`, `512Mi`, `timeout 60s`)
-- runtime secrets from Secret Manager
+- Autoscaling: `min=0`, `max` = Cloud Build substitution **`_MAX_INSTANCES`** (default **`1`** in the repo — one Node process avoids duplicate Gemini/Firestore background work). Override at submit time, e.g. `--substitutions=_MAX_INSTANCES=3`
+- Bounded resources (`1 vCPU`, `512Mi`, `timeout 60s`) — confirm in `cloudbuild.yaml` if you change them
+- Runtime secrets from Secret Manager
 - Firestore-backed state persistence (`ENABLE_FIRESTORE_PERSISTENCE=true`)
 
 ## 3.1) Firestore setup (restart-safe state)
@@ -71,8 +113,41 @@ gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
 SERVICE_URL=$(gcloud run services describe atmospheric-bliss --region asia-southeast1 --format='value(status.url)')
 curl -sS "$SERVICE_URL/healthz"
 curl -sS "$SERVICE_URL/readyz"
-curl -sS "$SERVICE_URL/api/state"
+curl -sS -o /dev/null -w "%{http_code}\n" "$SERVICE_URL/api/state"
 ```
+
+- **`/healthz`** and **`/readyz`** should return JSON even when the app uses Google Sign-In.
+- **`/api/state`:** with **`AUTH_MODE=public`** (default), expect **200** and JSON. With **`AUTH_MODE=google`**, an unauthenticated `curl` (no cookie / no `Authorization: Bearer`) correctly returns **401** JSON — treat **`/healthz` + `/readyz` + 401 on `/api/state`** as smoke OK, then confirm state in the browser after login (§4.1).
+
+**Gate:** do not start §4.1 until §4 passes: health endpoints OK, and `/api/state` is either JSON **200** (public) or JSON **401** with `authRequired` (google) — never an HTML error page.
+
+## 4.1) Post-deploy browser / product UAT (after §4)
+
+Run against the **same** `SERVICE_URL` in a normal browser (desktop + at least one mobile width). Check items and tick when verified.
+
+**Reference IDs** (use in issues/PRs: e.g. “UAT-4.1-radar”):
+
+| ID | Area |
+|----|------|
+| UAT-4.1-nav | All pages / routes / modals reachable without console errors |
+| UAT-4.1-ingest | Data ingestion signals (live vs stale): API status table, connection/system status, `lastUpdated` behavior |
+| UAT-4.1-display | Main dashboard: risk cards, logs, bilingual strings render (no raw `{ }` objects) |
+| UAT-4.1-alerts | Threat / alert surfaces: severity, copy, empty states |
+| UAT-4.1-deep | Threat deep dive: expand log → request completes or shows clear error (401/429/502); works with Google auth if enabled |
+| UAT-4.1-ux | UX/UI: typography, spacing, scroll, glass panels, breakpoints (narrow / wide) |
+| UAT-4.1-radar | Radar chart: renders, labels legible, no clipping, sensible with few/many categories |
+
+Checklist:
+
+- [ ] **UAT-4.1-nav** — Open every primary view (including settings/legal/disclaimer flows if shipped); no blank screen; no repeated redirect loops
+- [ ] **UAT-4.1-ingest** — Confirm feeds/API rows show expected status; tooltips or labels make sense when a source is `unavailable`
+- [ ] **UAT-4.1-display** — Risk summaries and logs update after refresh; no broken charts/tables
+- [ ] **UAT-4.1-alerts** — Alert UI matches severity; dismiss or filter if applicable works
+- [ ] **UAT-4.1-deep** — Deep dive: success path shows structured briefing; failure shows user-visible message (rate limit / AI error / network)
+- [ ] **UAT-4.1-ux** — Resize window / mobile emulation; tap targets; readable font sizes
+- [ ] **UAT-4.1-radar** — Radar axes and series visible; legend readable; dark/light contrast acceptable
+
+When all §4.1 boxes are checked, mark **Phase D** complete in the roll-up at the top.
 
 ## 5) CIS Level 1 aligned controls (practical baseline)
 
@@ -85,7 +160,7 @@ curl -sS "$SERVICE_URL/api/state"
   - Cloud Audit Logs
   - Cloud Run request logs and alerting
 - Limit blast radius:
-  - max instances cap
+  - max instances cap (`_MAX_INSTANCES` + Cloud Run limits)
   - request body limit
   - timeout limit
 - Patch process:
@@ -104,8 +179,8 @@ curl -sS "$SERVICE_URL/api/state"
 ## 7) Scale and ads readiness
 
 - Scale:
-  - increase `max-instances` and/or `cpu` during high traffic windows
-  - reduce polling frequency and payload size to lower cost
+  - increase `_MAX_INSTANCES` and/or `cpu` during high traffic windows (re-run **§4.1** and watch for duplicate background jobs / cost)
+  - reduce polling frequency and payload size to lower cost (`TACTICAL_PULSE_MS`, client poll interval if configured)
 - Ads:
   - add a dedicated config flag (for consent-aware ad rendering)
   - gate ad scripts by locale and consent status

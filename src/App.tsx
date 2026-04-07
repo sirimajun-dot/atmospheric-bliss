@@ -21,6 +21,7 @@ import { DataLifecycleMap } from './components/DataLifecycleMap';
 import { ThreatDeepDive } from './components/ThreatDeepDive';
 import { TermsOfService } from './components/TermsOfService';
 import { WelcomeDisclaimer } from './components/WelcomeDisclaimer';
+import { GoogleAuthGate } from './components/GoogleAuthGate';
 
 class ErrorBoundary extends Component<any, any> {
   state: any;
@@ -63,7 +64,9 @@ class ErrorBoundary extends Component<any, any> {
 export default function App() {
   return (
     <ErrorBoundary>
-      <AppContent />
+      <GoogleAuthGate>
+        <AppContent />
+      </GoogleAuthGate>
     </ErrorBoundary>
   );
 }

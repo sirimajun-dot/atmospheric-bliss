@@ -5,6 +5,8 @@ import { RiskData, LogEntry, DailySummary } from '../types';
 interface APIData {
   category: string;
   source: string;
+  /** Same substring used in `getStatus()` to match `connectionStatus[].source` */
+  statusLookupKey: string;
   status: 'success' | 'pending' | 'failed';
   currentMethod: string;
   devPlan: string;
@@ -25,15 +27,30 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     if (!connectionStatus) return 'pending';
     const match = connectionStatus.find(c => c.source.toLowerCase().includes(sourceName.toLowerCase()));
     if (match) {
-      return match.status === 'fetched' ? 'success' : 'pending';
+      const s = match.status.toLowerCase();
+      if (s === 'fetched') return 'success';
+      if (s === 'unavailable' || s === 'error' || s === 'failed') return 'failed';
+      return 'pending';
     }
     return 'pending';
+  };
+
+  const statusTooltip = (lookupKey: string): string | undefined => {
+    const row = connectionStatus?.find((c) => c.source.toLowerCase().includes(lookupKey.toLowerCase()));
+    if (!row) return undefined;
+    const s = row.status.toLowerCase();
+    if (s === "fetched") return undefined;
+    if (s === "unavailable") return "ดึงข้อมูลไม่สำเร็จ (HTTP / เครือข่าย / บริการต้นทาง) — รอรอบสแกนถัดไป";
+    if (s === "connecting") return "กำลังเชื่อมต่อ…";
+    if (s === "idle") return "ยังไม่มีข้อมูลสดในรอบนี้ (แหล่งนี้อาจยังไม่ได้ผูก API)";
+    return `สถานะ: ${row.status}`;
   };
 
   const apiData: APIData[] = [
     {
       category: 'ภัยธรรมชาติ (Natural Disaster)',
       source: 'USGS Earthquake API',
+      statusLookupKey: 'USGS',
       status: getStatus('USGS'),
       currentMethod: 'เชื่อมต่อ API ตรง (Real-time)',
       devPlan: 'ลด Latency เครือข่าย',
@@ -43,6 +60,7 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     {
       category: 'การป้องกันไซเบอร์ (Cyber Defense)',
       source: 'CISA KEV (API)',
+      statusLookupKey: 'CISA',
       status: getStatus('CISA'),
       currentMethod: 'เชื่อมต่อ JSON API (Real-time)',
       devPlan: 'เพิ่มระบบแจ้งเตือนช่องโหว่ Day-1',
@@ -52,6 +70,7 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     {
       category: 'ความมั่นคงทางชีวภาพและภูมิรัฐศาสตร์',
       source: 'GDACS (UN/EU)',
+      statusLookupKey: 'GDACS',
       status: getStatus('GDACS'),
       currentMethod: 'ดึงข้อมูลผ่าน Zero Trust Edge',
       devPlan: 'คงไว้เป็น Baseline รัฐบาล',
@@ -61,6 +80,7 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     {
       category: 'สภาพภูมิอากาศ (Climate)',
       source: 'TMD (กรมอุตุฯ)',
+      statusLookupKey: 'TMD',
       status: getStatus('TMD'),
       currentMethod: 'Local API Fetcher',
       devPlan: 'เพิ่มเรดาร์ฝน',
@@ -70,6 +90,7 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     {
       category: 'การป้องกันไซเบอร์ (Cyber Defense)',
       source: 'MITRE ATT&CK',
+      statusLookupKey: 'MITRE',
       status: getStatus('MITRE'),
       currentMethod: 'AI Guided Retrieval',
       devPlan: 'จับคู่ CVE อัตโนมัติ',
@@ -79,6 +100,7 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     {
       category: 'การป้องกันไซเบอร์ (Cyber Defense)',
       source: 'ThaiCERT (สพธอ.)',
+      statusLookupKey: 'ThaiCERT',
       status: getStatus('ThaiCERT'),
       currentMethod: 'National Intelligence Feed',
       devPlan: 'เจาะจงภัยองค์กรไทย',
@@ -88,6 +110,7 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     {
       category: 'การป้องกันไซเบอร์ (Cyber Defense)',
       source: 'NCSA (สกมช.)',
+      statusLookupKey: 'NCSA',
       status: getStatus('NCSA'),
       currentMethod: 'National Intelligence Feed',
       devPlan: 'เชื่อมต่อ PII Masking',
@@ -97,6 +120,7 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     {
       category: 'ปัญญาประดิษฐ์ (AI Core)',
       source: 'Gemini 2.5 Flash Lite',
+      statusLookupKey: 'Gemini',
       status: getStatus('Gemini'),
       currentMethod: 'Strict RAG / @google/genai',
       devPlan: 'อัปเกรดความฉลาดเป็นเวอร์ชั่น Pro (อนาคต)',
@@ -106,6 +130,7 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     {
       category: 'การเงินและเศรษฐกิจ (Finance)',
       source: 'FRED (St. Louis Fed)',
+      statusLookupKey: 'FRED',
       status: getStatus('FRED'),
       currentMethod: 'Federal Reserve Polling',
       devPlan: 'ดึงดัชนีเงินเฟ้ออัตโนมัติ',
@@ -115,6 +140,7 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     {
       category: 'การเงินและเศรษฐกิจ (Finance)',
       source: 'OFR Financial Stress',
+      statusLookupKey: 'OFR',
       status: getStatus('OFR'),
       currentMethod: 'Federal Polling',
       devPlan: 'เชื่อมกราฟสถิติ',
@@ -124,6 +150,7 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     {
       category: 'การเงินและเศรษฐกิจ (Finance)',
       source: 'IMF GFSR + WEO',
+      statusLookupKey: 'IMF',
       status: getStatus('IMF'),
       currentMethod: 'Global Bank Feeds',
       devPlan: 'วิเคราะห์รายงานรายไตรมาส',
@@ -231,7 +258,10 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
                   <div className="text-[8.8px] text-blue-400 mb-[2.9px]">{api.category}</div>
                   <div className="text-[10.2px] font-medium text-white">{api.source}</div>
                 </td>
-                <td className="p-[11.7px] text-center">
+                <td
+                  className="p-[11.7px] text-center"
+                  title={statusTooltip(api.statusLookupKey)}
+                >
                   {api.status === 'success' ? (
                     <CheckCircle2 className="w-[14.6px] h-[14.6px] text-green-500 mx-auto" />
                   ) : api.status === 'pending' ? (

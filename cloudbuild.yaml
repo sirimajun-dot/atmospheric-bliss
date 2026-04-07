@@ -34,7 +34,7 @@ steps:
       - '--min-instances'
       - '0'
       - '--max-instances'
-      - '20'
+      - '$_MAX_INSTANCES'
       - '--set-env-vars'
       - 'NODE_ENV=production,MAX_JSON_BODY=256kb,ENABLE_FIRESTORE_PERSISTENCE=true'
       - '--set-secrets'
@@ -46,3 +46,6 @@ substitutions:
   _SERVICE_NAME: atmospheric-bliss
   _REGION: asia-southeast1
   _REPO_NAME: app-images
+  # Single instance: one Node process = one 5‑min intelligence loop (avoids duplicate Gemini/Firestore).
+  # Override on deploy: --substitutions=_MAX_INSTANCES=3
+  _MAX_INSTANCES: "1"
