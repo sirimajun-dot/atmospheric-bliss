@@ -39,6 +39,13 @@ Tick only if your deployed revision actually includes these commits.
 
 *After a major merge, re-open this list and adjust if behavior changed.*
 
+### Execution order (do this now on GCP)
+
+1. **Phase A** — Complete §1–2 (`gcloud config`, enable APIs, `GEMINI_API_KEY` secret + IAM).
+2. **Phase B** — §3 `gcloud builds submit --config cloudbuild.yaml` from the repo root, then §3.1 Firestore + `datastore.user`.
+3. **Phase C** — §4 smoke on `SERVICE_URL` (bash `curl` or PowerShell below).
+4. **Phase D** — §4.1 browser UAT; tick roll-up **D** when done.
+
 ---
 
 ## 1) Prerequisites
@@ -120,6 +127,34 @@ curl -sS -o /dev/null -w "%{http_code}\n" "$SERVICE_URL/api/state"
 - **`/api/state`:** with **`AUTH_MODE=public`** (default), expect **200** and JSON. With **`AUTH_MODE=google`**, an unauthenticated `curl` (no cookie / no `Authorization: Bearer`) correctly returns **401** JSON — treat **`/healthz` + `/readyz` + 401 on `/api/state`** as smoke OK, then confirm state in the browser after login (§4.1).
 
 **Gate:** do not start §4.1 until §4 passes: health endpoints OK, and `/api/state` is either JSON **200** (public) or JSON **401** with `authRequired` (google) — never an HTML error page.
+
+### 4.0) Same checks in PowerShell (Windows)
+
+From a shell where `gcloud` works:
+
+```powershell
+$SERVICE_URL = gcloud run services describe atmospheric-bliss --region asia-southeast1 --format="value(status.url)"
+Invoke-RestMethod -Uri "$SERVICE_URL/healthz"
+Invoke-RestMethod -Uri "$SERVICE_URL/readyz"
+curl.exe -sS -o NUL -w "%{http_code}`n" "$SERVICE_URL/api/state"
+```
+
+The last line prints **200** (public) or **401** (google mode without session). `healthz` / `readyz` should still return JSON.
+
+### 4.0.1) Optional: public / internal ingress toggles (Windows)
+
+Repo includes **templates only** (no real project id):
+
+- `scripts/morning-on.ps1.example` — `ingress=all` + `allUsers` invoker (public again).
+- `scripts/night-off.ps1.example` — remove public invoker + `ingress=internal`.
+
+Copy to local names (gitignored) or pass project explicitly:
+
+```powershell
+Copy-Item "scripts\morning-on.ps1.example" "scripts\morning-on.ps1"
+# Edit ProjectId inside the copy, or run:
+powershell -ExecutionPolicy Bypass -File "scripts\morning-on.ps1.example" -ProjectId "YOUR_PROJECT_ID"
+```
 
 ## 4.1) Post-deploy browser / product UAT (after §4)
 

@@ -14,3 +14,7 @@ coverage/
 /cursor-transcript-read-manifest.txt
 /cursor-transcript-text-only.txt
 /cursor-user-index.txt
+
+# Local Cloud Run ingress toggles (optional; may contain real GCP project ids)
+/scripts/morning-on.ps1
+/scripts/night-off.ps1

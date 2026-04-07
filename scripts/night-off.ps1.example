@@ -1,0 +1,53 @@
+# ปิดการเข้าถึง Cloud Run จากอินเทอร์เน็ตชั่วคราว (กลางคืน / ช่วงเสี่ยง)
+# คัดลอกเป็น night-off.ps1 แล้วแก้ ProjectId หรือรันด้วย: -ProjectId "your-gcp-project"
+
+param(
+  [string]$ProjectId = "YOUR_PROJECT_ID",
+  [string]$Service = "atmospheric-bliss",
+  [string]$Region = "asia-southeast1"
+)
+
+$ErrorActionPreference = "Stop"
+
+if ($ProjectId -eq "YOUR_PROJECT_ID") {
+  throw "ตั้ง ProjectId (พารามิเตอร์ -ProjectId หรือแก้ค่า default ในไฟล์)"
+}
+
+if (-not (Get-Command gcloud -ErrorAction SilentlyContinue)) {
+  foreach ($d in @(
+      "$env:LOCALAPPDATA\Google\Cloud SDK\google-cloud-sdk\bin",
+      "$env:ProgramFiles\Google\Cloud SDK\google-cloud-sdk\bin",
+      "${env:ProgramFiles(x86)}\Google\Cloud SDK\google-cloud-sdk\bin"
+    )) {
+    if ($d -and (Test-Path (Join-Path $d "gcloud.cmd"))) {
+      $env:Path = "$d;$env:Path"
+      break
+    }
+  }
+}
+if (-not (Get-Command gcloud -ErrorAction SilentlyContinue)) {
+  throw "ไม่พบ gcloud — ติดตั้ง Cloud SDK หรือเพิ่ม bin ใน PATH"
+}
+
+Write-Host "Project: $ProjectId | Service: $Service | Region: $Region"
+Write-Host "Removing public invoker + setting ingress=internal ..."
+
+gcloud config set project $ProjectId 2>$null | Out-Null
+
+gcloud run services remove-iam-policy-binding $Service `
+  --region=$Region `
+  --member="allUsers" `
+  --role="roles/run.invoker" `
+  --quiet 2>$null
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "Note: remove-iam-policy-binding skipped or failed (often already off). Exit: $LASTEXITCODE"
+}
+
+gcloud run services update $Service `
+  --region=$Region `
+  --ingress=internal `
+  --quiet
+
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host "Done. Service is not reachable from the public internet."

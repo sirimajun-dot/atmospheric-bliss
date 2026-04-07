@@ -1,0 +1,52 @@
+# เปิดการเข้าถึง Cloud Run จากอินเทอร์เน็ต (เช้า / หลังช่วงเสี่ยง)
+# คัดลอกเป็น morning-on.ps1 แล้วแก้ ProjectId หรือรันด้วย: -ProjectId "your-gcp-project"
+# ต้องมี gcloud ติดตั้งและล็อกอินแล้ว
+
+param(
+  [string]$ProjectId = "YOUR_PROJECT_ID",
+  [string]$Service = "atmospheric-bliss",
+  [string]$Region = "asia-southeast1"
+)
+
+$ErrorActionPreference = "Stop"
+
+if ($ProjectId -eq "YOUR_PROJECT_ID") {
+  throw "ตั้ง ProjectId (พารามิเตอร์ -ProjectId หรือแก้ค่า default ในไฟล์)"
+}
+
+if (-not (Get-Command gcloud -ErrorAction SilentlyContinue)) {
+  foreach ($d in @(
+      "$env:LOCALAPPDATA\Google\Cloud SDK\google-cloud-sdk\bin",
+      "$env:ProgramFiles\Google\Cloud SDK\google-cloud-sdk\bin",
+      "${env:ProgramFiles(x86)}\Google\Cloud SDK\google-cloud-sdk\bin"
+    )) {
+    if ($d -and (Test-Path (Join-Path $d "gcloud.cmd"))) {
+      $env:Path = "$d;$env:Path"
+      break
+    }
+  }
+}
+if (-not (Get-Command gcloud -ErrorAction SilentlyContinue)) {
+  throw "ไม่พบ gcloud — ติดตั้ง Cloud SDK หรือเพิ่ม bin ใน PATH"
+}
+
+Write-Host "Project: $ProjectId | Service: $Service | Region: $Region"
+Write-Host "Setting ingress=all + restoring allUsers invoker ..."
+
+gcloud config set project $ProjectId 2>$null | Out-Null
+
+gcloud run services update $Service `
+  --region=$Region `
+  --ingress=all `
+  --quiet
+
+gcloud run services add-iam-policy-binding $Service `
+  --region=$Region `
+  --member="allUsers" `
+  --role="roles/run.invoker" `
+  --quiet 2>$null
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "Note: add-iam-policy-binding exited $LASTEXITCODE (may already be public)."
+}
+
+Write-Host "Done. Public URL should work again (allow a few seconds to propagate)."
