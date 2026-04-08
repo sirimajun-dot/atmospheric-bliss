@@ -72,18 +72,36 @@ export default function App() {
 }
 
 function AppContent() {
-  const { risks, top3Risks, overallTopThreat, weather, alerts, compositeScore, logs, isLoading, isLocating, isFallback, geoError, refresh, reacquireLocation, isKeyInvalid, dailySummary, apiStatus, connectionStatus, history } = useRiskData();
-  const [showLogs, setShowLogs] = React.useState(false);
+  const { risks, top3Risks, overallTopThreat, weather, alerts, compositeScore, logs, insightsBufferMax, isLoading, isLocating, isFallback, geoError, refresh, reacquireLocation, isKeyInvalid, dailySummary, apiStatus, connectionStatus, history } = useRiskData();
+  const [showLogs, setShowLogs] = React.useState(true);
   const [showWeather, setShowWeather] = React.useState(false);
   const [showMatrix, setShowMatrix] = React.useState(false);
   const [activeDomainId, setActiveDomainId] = React.useState<string | null>(null);
-  const [activeTab, setActiveTab] = React.useState<'dashboard' | 'news' | 'insight' | 'settings' | 'tos'>(() => {
-    return (localStorage.getItem('active_tab') as any) || 'dashboard';
-  });
+  const resolveInitialTab = (): 'dashboard' | 'news' | 'insight' | 'settings' | 'tos' => {
+    const hash = (window.location.hash || '').toLowerCase();
+    if (hash === '#tos') return 'tos';
+    const saved = localStorage.getItem('active_tab');
+    if (saved === 'dashboard' || saved === 'news' || saved === 'insight' || saved === 'settings') {
+      return saved;
+    }
+    return 'dashboard';
+  };
+  const [activeTab, setActiveTab] = React.useState<'dashboard' | 'news' | 'insight' | 'settings' | 'tos'>(resolveInitialTab);
 
   React.useEffect(() => {
+    // Do not persist "tos" as startup tab; opening the app should default to dashboard/settings/news/insight.
+    if (activeTab === 'tos') return;
     localStorage.setItem('active_tab', activeTab);
   }, [activeTab]);
+  React.useEffect(() => {
+    const onHashChange = () => {
+      const hash = (window.location.hash || '').toLowerCase();
+      if (hash === '#tos') setActiveTab('tos');
+      if (hash === '#settings') setActiveTab('settings');
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
   const [radarTheme, setRadarTheme] = React.useState<'default' | 'tactical' | 'minimal' | 'brutalist' | 'organic'>('default');
   const [focusedLogId, setFocusedLogId] = React.useState<string | null>(null);
   
@@ -145,6 +163,28 @@ function AppContent() {
   const handleFocusLog = (logId: string) => {
     setFocusedLogId(logId);
     setActiveTab('news');
+  };
+  const scrollToTopNow = () => {
+    const jump = () => {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    };
+    // Run twice: immediately and next frame for mobile/webview layouts.
+    jump();
+    requestAnimationFrame(jump);
+  };
+  
+  const openTermsOfService = () => {
+    setActiveTab('tos');
+    if (window.location.hash !== '#tos') window.location.hash = 'tos';
+    scrollToTopNow();
+  };
+  
+  const backToSettingsFromTos = () => {
+    setActiveTab('settings');
+    if (window.location.hash === '#tos') window.location.hash = 'settings';
+    scrollToTopNow();
   };
 
   return (
@@ -366,7 +406,7 @@ function AppContent() {
                 <div className="w-1 h-4 bg-emerald-500 rounded-full" />
                 <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">ผังการไหลของข้อมูล (Data Flow)</h3>
               </div>
-              <DataLifecycleMap logs={logs} />
+              <DataLifecycleMap logs={logs} insightsBufferMax={insightsBufferMax} />
             </div>
 
             {/* Radar Theme Selection Section */}
@@ -406,7 +446,7 @@ function AppContent() {
               </div>
               <div className="flex flex-col gap-3">
                 <button
-                  onClick={() => setActiveTab('tos')}
+                  onClick={openTermsOfService}
                   className="w-full flex items-center justify-between p-4 bg-slate-800 hover:bg-slate-700 rounded-sm border border-slate-700 transition-all group"
                 >
                   <div className="flex items-center gap-3">
@@ -443,7 +483,7 @@ function AppContent() {
             </div>
           </motion.div>
         ) : activeTab === 'tos' ? (
-          <TermsOfService onBack={() => setActiveTab('settings')} />
+          <TermsOfService onBack={backToSettingsFromTos} />
         ) : (
           /* Default to Events (News) Tab - Show AI Analysis Here */
           <motion.div
@@ -470,7 +510,7 @@ function AppContent() {
             ข้อมูลทั้งหมดถูกรวบรวมและวิเคราะห์โดยระบบ AI อัจฉริยะ ภายใต้ข้อกำหนดการใช้งานที่เป็นธรรม (Fair Use)
           </p>
           <button
-            onClick={() => setActiveTab('tos')}
+            onClick={openTermsOfService}
             className="mt-4 text-[9px] text-emerald-600 font-black uppercase tracking-widest hover:underline"
           >
             อ่านข้อกำหนดการใช้งาน

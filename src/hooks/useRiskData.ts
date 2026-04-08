@@ -27,6 +27,7 @@ export const useRiskData = () => {
         risks: [],
         dailySummary: null,
         logs: [],
+        insightsBufferMax: 50,
         system: 'INITIALIZING',
         isLoading: true,
         compositeScore: 0,
@@ -52,50 +53,65 @@ export const useRiskData = () => {
             }
 
             const data = await response.json();
-            
+
+            const resolveInsightsCap = (v: unknown) =>
+                typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 50;
+
+            const mapInsightsToLogs = (insights: any[]) =>
+                (insights || []).map((i: any, idx: number) => {
+                    let cat = "System";
+                    if (i.source?.includes("USGS")) cat = "Natural Disaster";
+                    if (i.source?.includes("CISA")) cat = "Cyber Defense";
+                    if (i.source?.includes("GDACS")) cat = "Geopolitics";
+                    return {
+                        id: i.id || `log-${idx}`,
+                        timestamp: i.time || new Date().toISOString(),
+                        time: i.time
+                            ? new Date(i.time).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })
+                            : new Date(data.lastUpdated || Date.now()).toLocaleTimeString("th-TH", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                              }),
+                        messageThai: redactSensitiveInfo(i.insight || "System Pulse"),
+                        details: redactSensitiveInfo(i.data || ""),
+                        sourceName: i.source || "SYSTEM",
+                        category: cat,
+                        severity: i.risk === "restricted" || i.risk === "high" ? "high" : "medium",
+                    };
+                });
+
             if (data.report) {
                 const risks = data.report.risks || [];
                 const scores = risks.map((r: any) => r.score || 0);
-                const compositeScore = risks.length > 0 
-                  ? Math.round(scores.reduce((a: number, b: number) => a + b, 0) / risks.length) 
-                  : 0;
-                
+                const compositeScore =
+                    risks.length > 0
+                        ? Math.round(scores.reduce((a: number, b: number) => a + b, 0) / risks.length)
+                        : 0;
+
                 const nextState = {
                     risks: risks,
                     dailySummary: data.report.dailySummary || null,
-                    logs: (data.insights || []).map((i: any, idx: number) => {
-                        let cat = 'System';
-                        if (i.source?.includes('USGS')) cat = 'Natural Disaster';
-                        if (i.source?.includes('CISA')) cat = 'Cyber Defense';
-                        if (i.source?.includes('GDACS')) cat = 'Geopolitics';
-                        return {
-                            id: i.id || `log-${idx}`,
-                            timestamp: i.time || new Date().toISOString(),
-                            time: i.time ? new Date(i.time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : new Date(data.lastUpdated || Date.now()).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }),
-                            messageThai: redactSensitiveInfo(i.insight || 'System Pulse'),
-                            details: redactSensitiveInfo(i.data || ''),
-                            sourceName: i.source || 'SYSTEM',
-                            category: cat,
-                            severity: i.risk === 'restricted' || i.risk === 'high' ? 'high' : 'medium'
-                        };
-                    }),
-                    system: data.system || 'STABLE',
+                    logs: mapInsightsToLogs(data.insights),
+                    insightsBufferMax: resolveInsightsCap(data.insightsBufferMax),
+                    system: data.system || "STABLE",
                     isLoading: false,
                     compositeScore,
                     weather: data.weather || null,
                     lastUpdated: data.lastUpdated,
                     connectionStatus: data.connectionStatus || [],
-                    history: data.history || {} // Ghost History Pulse
+                    history: data.history || {},
                 };
 
                 apiCache = { data: nextState, timestamp: Date.now() };
                 setState(nextState);
             } else {
-                setState(prev => ({ 
-                    ...prev, 
-                    isLoading: false, 
+                setState((prev) => ({
+                    ...prev,
+                    isLoading: false,
                     system: data.system,
-                    connectionStatus: data.connectionStatus || [] 
+                    connectionStatus: data.connectionStatus || [],
+                    insightsBufferMax: resolveInsightsCap(data.insightsBufferMax),
+                    ...(Array.isArray(data.insights) ? { logs: mapInsightsToLogs(data.insights) } : {}),
                 }));
             }
         } catch (err) {

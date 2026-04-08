@@ -42,7 +42,8 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
     if (s === "fetched") return undefined;
     if (s === "unavailable") return "ดึงข้อมูลไม่สำเร็จ (HTTP / เครือข่าย / บริการต้นทาง) — รอรอบสแกนถัดไป";
     if (s === "connecting") return "กำลังเชื่อมต่อ…";
-    if (s === "idle") return "ยังไม่มีข้อมูลสดในรอบนี้ (แหล่งนี้อาจยังไม่ได้ผูก API)";
+    if (s === "idle")
+      return "ยังไม่ได้เชื่อมต่อ fetch ในโค้ดรุ่นนี้ (ไม่ใช่แหล่งล่ม) — รอแผนขยายแหล่ง";
     return `สถานะ: ${row.status}`;
   };
 
@@ -78,13 +79,23 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
       frequency: 'ทุก 5 นาที'
     },
     {
+      category: 'ภูมิรัฐศาสตร์ (Geopolitics)',
+      source: 'ReliefWeb API',
+      statusLookupKey: 'ReliefWeb',
+      status: getStatus('ReliefWeb'),
+      currentMethod: 'Humanitarian report API (v2)',
+      devPlan: 'ขอ appname ทางการและเพิ่มตัวกรองภูมิภาค/ประเทศ',
+      benefit: 'ติดตามเหตุการณ์ภูมิรัฐศาสตร์/มนุษยธรรมใกล้เวลาจริง',
+      frequency: 'ทุก 5 นาที'
+    },
+    {
       category: 'สภาพภูมิอากาศ (Climate)',
-      source: 'TMD (กรมอุตุฯ)',
-      statusLookupKey: 'TMD',
-      status: getStatus('TMD'),
-      currentMethod: 'Local API Fetcher',
-      devPlan: 'เพิ่มเรดาร์ฝน',
-      benefit: 'ติดตามสภาพอากาศ',
+      source: 'Open-Meteo (weather/air · Bangkok)',
+      statusLookupKey: 'Open-Meteo',
+      status: getStatus('Open-Meteo'),
+      currentMethod: 'Open-Meteo forecast + air-quality API (พิกัดกรุงเทพฯ)',
+      devPlan: 'เชื่อม TMD จริงหรือหลายจุดภูมิภาค',
+      benefit: 'PM2.5 / ความน่าจะเป็นฝน สำหรับภาพรวม',
       frequency: 'ทุก 5 นาที'
     },
     {
@@ -158,6 +169,25 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
       frequency: 'ทุก 5 นาที'
     }
   ];
+
+  const normalize = (s: string) => s.toLowerCase().trim();
+  const tableKeys = apiData.map((r) => r.statusLookupKey);
+  const tableKeysNorm = tableKeys.map(normalize);
+  const rows = Array.isArray(connectionStatus) ? connectionStatus : [];
+
+  const notFetchedYet = rows.filter((r) => {
+    const s = normalize(r.status || "");
+    return s === "idle" || s === "connecting";
+  });
+
+  const fetchedButNotInTable = rows.filter((r) => {
+    const s = normalize(r.status || "");
+    if (s !== "fetched") return false;
+    const src = normalize(r.source || "");
+    return !tableKeysNorm.some((k) => src.includes(k) || k.includes(src));
+  });
+
+  const inTableButNotFetched = apiData.filter((r) => r.status !== "success");
 
   const topThreats = risks
     .filter(r => r.score > r.threshold)
@@ -292,6 +322,54 @@ export const APIStatusTable: React.FC<Props> = ({ apiStatus, connectionStatus, r
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* 3. Data Coverage Audit */}
+      <div className="rounded-sm border border-amber-500/20 bg-amber-500/5 p-[11.7px]">
+        <h3 className="mb-[5.8px] flex items-center gap-[5.8px] text-[10.2px] font-bold text-amber-400">
+          <AlertTriangle className="h-[11.7px] w-[11.7px]" />
+          Data Coverage Audit (Gap Report)
+        </h3>
+        <div className="mb-[8.8px] grid grid-cols-1 gap-[5.8px] md:grid-cols-3">
+          <div className="rounded-sm border border-white/10 bg-black/30 p-[8.8px]">
+            <div className="text-[8.1px] text-gray-400">ยังไม่ดึงจริง (idle = ยังไม่ผูกในโค้ด / connecting)</div>
+            <div className="text-[14.6px] font-black text-amber-300">{notFetchedYet.length}</div>
+          </div>
+          <div className="rounded-sm border border-white/10 bg-black/30 p-[8.8px]">
+            <div className="text-[8.1px] text-gray-400">ดึงแล้วแต่ยังไม่อยู่ใน table</div>
+            <div className="text-[14.6px] font-black text-emerald-300">{fetchedButNotInTable.length}</div>
+          </div>
+          <div className="rounded-sm border border-white/10 bg-black/30 p-[8.8px]">
+            <div className="text-[8.1px] text-gray-400">อยู่ใน table แต่ยังไม่ fetched</div>
+            <div className="text-[14.6px] font-black text-rose-300">{inTableButNotFetched.length}</div>
+          </div>
+        </div>
+        <div className="space-y-[5.8px] text-[9.5px]">
+          <div>
+            <div className="mb-[2.9px] text-[8.8px] font-bold text-amber-300">A) ยังไม่ดึงจริง</div>
+            <div className="text-gray-300">
+              {notFetchedYet.length
+                ? notFetchedYet.map((r) => `${r.source} (${r.status})`).join(" | ")
+                : "ไม่มี"}
+            </div>
+          </div>
+          <div>
+            <div className="mb-[2.9px] text-[8.8px] font-bold text-emerald-300">B) ดึงแล้วแต่ยังไม่เข้า table</div>
+            <div className="text-gray-300">
+              {fetchedButNotInTable.length
+                ? fetchedButNotInTable.map((r) => r.source).join(" | ")
+                : "ไม่มี"}
+            </div>
+          </div>
+          <div>
+            <div className="mb-[2.9px] text-[8.8px] font-bold text-rose-300">C) อยู่ใน table แต่ยังไม่ fetched</div>
+            <div className="text-gray-300">
+              {inTableButNotFetched.length
+                ? inTableButNotFetched.map((r) => `${r.source} (${r.status})`).join(" | ")
+                : "ไม่มี"}
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="p-[11.7px] rounded-sm border border-emerald-500/20 bg-emerald-500/5">

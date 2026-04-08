@@ -36,9 +36,9 @@ steps:
       - '--max-instances'
       - '$_MAX_INSTANCES'
       - '--set-env-vars'
-      - 'NODE_ENV=production,MAX_JSON_BODY=256kb,ENABLE_FIRESTORE_PERSISTENCE=true'
+      - 'NODE_ENV=production,MAX_JSON_BODY=256kb,ENABLE_FIRESTORE_PERSISTENCE=true,RELIEFWEB_APPNAME=$_RELIEFWEB_APPNAME,INSIGHTS_BUFFER_MAX=50'
       - '--set-secrets'
-      - 'GEMINI_API_KEY=GEMINI_API_KEY:latest'
+      - 'GEMINI_API_KEY=GEMINI_API_KEY:latest,FRED_API_KEY=tomr01_api_key:latest'
       - '--labels'
       - 'service=atmospheric-bliss,env=prod'
 
@@ -49,3 +49,5 @@ substitutions:
   # Single instance: one Node process = one 5‑min intelligence loop (avoids duplicate Gemini/Firestore).
   # Override on deploy: --substitutions=_MAX_INSTANCES=3
   _MAX_INSTANCES: "1"
+  # ReliefWeb requires an approved appname (tomr is currently set; change after approval if needed).
+  _RELIEFWEB_APPNAME: "tomr"

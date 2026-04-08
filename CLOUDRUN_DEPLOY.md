@@ -156,13 +156,15 @@ gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
 
 ```bash
 SERVICE_URL=$(gcloud run services describe atmospheric-bliss --region asia-southeast1 --format='value(status.url)')
-curl -sS "$SERVICE_URL/healthz"
+curl -sS "$SERVICE_URL/livez"
 curl -sS "$SERVICE_URL/readyz"
 curl -sS -o /dev/null -w "%{http_code}\n" "$SERVICE_URL/api/state"
 ```
 
-- **`/healthz`** and **`/readyz`** should return JSON even when the app uses Google Sign-In.
-- **`/api/state`:** with **`AUTH_MODE=public`** (default), expect **200** and JSON. With **`AUTH_MODE=google`**, an unauthenticated `curl` (no cookie / no `Authorization: Bearer`) correctly returns **401** JSON — treat **`/healthz` + `/readyz` + 401 on `/api/state`** as smoke OK, then confirm state in the browser after login (§4.1).
+- **Always set `SERVICE_URL` from `gcloud … status.url`** (do not rely on an old numeric hostname copied from screenshots; it may not match the revision you deployed).
+- **Cloud Run quirk:** on the default **`*.run.app`** URL, **`GET /healthz`** (no trailing slash) is often answered by Google’s edge with an HTML **404** before traffic reaches your app. Use **`/livez`** or **`/healthz/`** for smoke; **`/readyz`** is unaffected.
+- **`/livez`** (or **`/healthz/`**) and **`/readyz`** should return JSON even when the app uses Google Sign-In.
+- **`/api/state`:** with **`AUTH_MODE=public`** (default), expect **200** and JSON. With **`AUTH_MODE=google`**, an unauthenticated `curl` (no cookie / no `Authorization: Bearer`) correctly returns **401** JSON — treat **`/livez` + `/readyz` + 401 on `/api/state`** as smoke OK, then confirm state in the browser after login (§4.1).
 
 **Gate:** do not start §4.1 until §4 passes: health endpoints OK, and `/api/state` is either JSON **200** (public) or JSON **401** with `authRequired` (google) — never an HTML error page.
 
@@ -172,12 +174,12 @@ From a shell where `gcloud` works:
 
 ```powershell
 $SERVICE_URL = gcloud run services describe atmospheric-bliss --region asia-southeast1 --format="value(status.url)"
-Invoke-RestMethod -Uri "$SERVICE_URL/healthz"
+Invoke-RestMethod -Uri "$SERVICE_URL/livez"
 Invoke-RestMethod -Uri "$SERVICE_URL/readyz"
 curl.exe -sS -o NUL -w "%{http_code}`n" "$SERVICE_URL/api/state"
 ```
 
-The last line prints **200** (public) or **401** (google mode without session). `healthz` / `readyz` should still return JSON.
+The last line prints **200** (public) or **401** (google mode without session). `livez` / `readyz` should still return JSON.
 
 **One-shot script (template):** from repo root, after `gcloud` is logged in and project is set:
 
@@ -221,24 +223,46 @@ Run against the **same** `SERVICE_URL` in a normal browser (desktop + at least o
 Checklist:
 
 - [ ] **UAT-4.1-nav** — Open every primary view (including settings/legal/disclaimer flows if shipped); no blank screen; no repeated redirect loops
-- [ ] **UAT-4.1-ingest** — Confirm feeds/API rows show expected status; tooltips or labels make sense when a source is `unavailable`
+- [x] **UAT-4.1-ingest** — Confirm feeds/API rows show expected status; tooltips or labels make sense when a source is `unavailable`
 - [ ] **UAT-4.1-display** — Risk summaries and logs update after refresh; no broken charts/tables
 - [ ] **UAT-4.1-alerts** — Alert UI matches severity; dismiss or filter if applicable works
-- [ ] **UAT-4.1-deep** — Deep dive: success path shows structured briefing; failure shows user-visible message (rate limit / AI error / network)
-- [ ] **UAT-4.1-ux** — Resize window / mobile emulation; tap targets; readable font sizes
+- [x] **UAT-4.1-deep** — Deep dive: success path shows structured briefing; failure shows user-visible message (rate limit / AI error / network)
+- [x] **UAT-4.1-ux** — Resize window / mobile emulation; tap targets; readable font sizes
 - [ ] **UAT-4.1-radar** — Radar axes and series visible; legend readable; dark/light contrast acceptable
 
+Current blockers from latest UAT run:
+
+- `UAT-4.1-nav`: "Terms of use" opens but does not snap to top of Terms content.
+- `UAT-4.1-display`: Trend graph does not render.
+- `UAT-4.1-alerts`: Alert items are inconsistent (some render, some do not).
+- `UAT-4.1-radar`: Radar data series and legend are not visible.
+
 When all §4.1 boxes are checked, mark **Phase D** complete in the roll-up at the top.
+
+### 4.1.2) Domain → source matrix (as implemented today)
+
+Eight risk `id` values sent to the client are always: `geopolitics`, `climate`, `ai`, `nature`, `cyber`, `bio`, `finance`, `social` (server normalizes to eight rows; missing AI output becomes a placeholder row).
+
+| Domain `id` | Wired ingest today (`fetchDataFeeds` / AI) | Listed in Settings table / backlog only |
+|-------------|-------------------------------------------|----------------------------------------|
+| `nature` | USGS Earthquake API; GDACS (UN/EU) via RSS | — |
+| `cyber` | CISA KEV (API) | MITRE ATT&CK, ThaiCERT, NCSA (not fetched yet) |
+| `climate` | Open-Meteo + air-quality API (`connectionStatus` source: **Open-Meteo (weather/air · Bangkok)**) | — |
+| `geopolitics` | GDACS (UN/EU); remainder from Gemini on raw context | ISW / ACLED / ICG etc. (whitelist only until wired) |
+| `ai` | Gemini intelligence pass (`Gemini 3 Intelligence` row → `fetched` after a successful parse) | — |
+| `finance` | From Gemini only until feeds land | FRED, OFR, IMF (table + whitelist) |
+| `bio` | From Gemini only until feeds land | DDC, WHO-style feeds (whitelist) |
+| `social` | From Gemini only until feeds land | — |
 
 ### 4.2) Post-UAT product backlog — intelligence & UX (agreed execution order)
 
 **Gate:** start this backlog **after Phase D (§4.1) is complete** unless a stakeholder explicitly reprioritizes. Empty domains or missing sub-scores on the live service are **expected** until these items ship; they are not Cloud Run deploy blockers.
 
-**Rationale (short):** The UI (`ThreatDeepDive`, radar) assumes **eight domain IDs** and optional **`findings[].score`** for IDX badges. Today `report.risks` is mostly whatever Gemini returns, so sparse domains and findings without scores are a **contract gap**, not random “lost config.”
+**Rationale (short):** The UI (`ThreatDeepDive`, radar) assumes **eight domain IDs** and optional **`findings[].score`** for IDX badges. The server now **normalizes `report.risks` to exactly eight domains** after each successful parse (and when serving `/api/state`); sparse AI output is filled with placeholder rows. **`findings[].score`** for IDX chips remains a **P2** contract gap until the prompt/shape is tightened.
 
 **Do in this order (tick when done):**
 
-- [ ] **P1 — Normalize eight domains on the server** — After each intelligence parse, merge AI `risks[]` with a fixed list (`geopolitics`, `climate`, `ai`, `nature`, `cyber`, `bio`, `finance`, `social`): for any missing `id`, inject a placeholder row (e.g. sensible `score`/`threshold`, Thai/EN labels, `sourceName` like “รอสัญญาณจากแหล่งข้อมูล”) so the client always receives eight entries. Improves deep-insight screen and radar consistency. *Primary file: `server.ts`.*
+- [x] **P1 — Normalize eight domains on the server** — After each intelligence parse, merge AI `risks[]` with a fixed list (`geopolitics`, `climate`, `ai`, `nature`, `cyber`, `bio`, `finance`, `social`): for any missing `id`, inject a placeholder row (e.g. sensible `score`/`threshold`, Thai/EN labels, `sourceName` like “รอสัญญาณจากแหล่งข้อมูล”) so the client always receives eight entries. Improves deep-insight screen and radar consistency. *Primary file: `server.ts`.*
 
 - [ ] **P2 — Prompt + JSON shape for sub-threat indices** — Extend the Gemini system prompt / example output so each `findings[]` item includes **`score` (0–100)** and **`severity`** (`low` | `medium` | `high` | `critical`) whenever there is a real event. Matches `src/types.ts` (`RiskFinding`) and unlocks the existing IDX chip in `ThreatDeepDive.tsx`. *Files: `server.ts`, optionally `src/types.ts` if tightening types.*
 

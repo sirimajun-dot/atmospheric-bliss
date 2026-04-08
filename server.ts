@@ -187,9 +187,12 @@ let globalState: any = {
   history: {} // Ghost History Buffer: { [domainId]: { short: number[], long: number[] } }
 };
 
+/** Live weather row: Open-Meteo + air-quality API (Bangkok coords) — not a direct TMD API. */
+const WEATHER_CONNECTION_SOURCE = "Open-Meteo (weather/air · Bangkok)";
+
 // Authorized Sources for Egress Filter & AI Scanning
 const AUTHORIZED_SOURCES = [
-  "USGS Earthquake API", "CISA KEV (API)", "GDACS (UN/EU)", "TMD (กรมอุตุฯ)",
+  "USGS Earthquake API", "CISA KEV (API)", "GDACS (UN/EU)", WEATHER_CONNECTION_SOURCE,
   "NASA FIRMS", "DDPM (ปภ.) / T-Alert", "NDWC (เตือนภัยพิบัติ)", "PTWC (NOAA)",
   "Copernicus C3S", "CEMS Early Warning", "NOAA Global Monitoring", "NASA GISS",
   "MITRE ATT&CK", "ThaiCERT (สพธอ.)", "NCSA (สกมช.)", "DDC (กรมควบคุมโรค)",
@@ -252,6 +255,14 @@ function tacticalPulseLoopEnabled(): boolean {
   return process.env.DISABLE_TACTICAL_PULSE !== "true";
 }
 
+/** Max rows in `globalState.insights`. `INSIGHTS_BUFFER_MAX` clamped 10–500; default 50. */
+function insightsBufferMax(): number {
+  const raw = Number(process.env.INSIGHTS_BUFFER_MAX ?? "");
+  const fallback = 50;
+  const n = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+  return Math.max(10, Math.min(500, n));
+}
+
 let rawDataContext = "";
 let lastGdacsFailureLogAt = 0;
 let db: Firestore | null = null;
@@ -296,7 +307,12 @@ async function loadStateFromFirestore() {
         ...globalState.report,
         ...(snapshotPayload?.report || {})
       },
-      insights: Array.isArray(snapshotPayload?.insights) ? snapshotPayload.insights : globalState.insights
+      insights: (() => {
+        const arr = Array.isArray(snapshotPayload?.insights) ? snapshotPayload.insights : globalState.insights;
+        const cap = insightsBufferMax();
+        if (!Array.isArray(arr)) return globalState.insights;
+        return arr.length > cap ? arr.slice(0, cap) : arr;
+      })()
     };
     console.log("[Persistence] globalState restored from Firestore");
   } catch (error) {
@@ -324,7 +340,7 @@ async function persistStateToFirestore() {
           dailySummary: globalState.report?.dailySummary || null,
           risks: Array.isArray(globalState.report?.risks) ? globalState.report.risks : []
         },
-        insights: Array.isArray(globalState.insights) ? globalState.insights.slice(0, 50) : [],
+        insights: Array.isArray(globalState.insights) ? globalState.insights.slice(0, insightsBufferMax()) : [],
         updatedAt: nowIso
       })
     ]);
@@ -428,21 +444,26 @@ async function fetchDataFeeds() {
         const wData = await wRes.json();
         const aData = await aRes.json();
 
+        const rainP = wData.current?.precipitation_probability || 0;
+        const pm = aData.current?.pm2_5 || 15;
         globalState.weather = {
           location: "Bangkok / Metropolitan",
-          rainProb8h: wData.current?.precipitation_probability || 0,
-          pm25: aData.current?.pm2_5 || 15,
+          rainProb8h: rainP,
+          pm25: pm,
           temp: 32,
           humidity: 65,
           condition: "Normal"
         };
-        statusUpdates["TMD (กรมอุตุฯ)"] = 'fetched';
+        feeds.push(
+          `[Open-Meteo] Bangkok area: rainProb8h=${rainP}% pm2.5=${pm} (open-meteo.com; attribution required for public products)`
+        );
+        statusUpdates[WEATHER_CONNECTION_SOURCE] = "fetched";
       } else {
-        statusUpdates["TMD (กรมอุตุฯ)"] = "unavailable";
+        statusUpdates[WEATHER_CONNECTION_SOURCE] = "unavailable";
       }
     } catch (e) {
       console.error("Weather Fetch Failed");
-      statusUpdates["TMD (กรมอุตุฯ)"] = "unavailable";
+      statusUpdates[WEATHER_CONNECTION_SOURCE] = "unavailable";
     }
 
     rawDataContext = feeds.join("\n\n");
@@ -463,8 +484,8 @@ async function fetchDataFeeds() {
       risk: 'info',
       time: now.toISOString()
     });
-    // Cap memory to 50 items to keep UI snappy
-    if (globalState.insights.length > 50) globalState.insights = globalState.insights.slice(0, 50);
+    const cap = insightsBufferMax();
+    if (globalState.insights.length > cap) globalState.insights = globalState.insights.slice(0, cap);
 
   } catch (e) {
     console.error("[Aggregator Engine Error]", e);
@@ -489,6 +510,10 @@ async function processIntelligence() {
       risk: 'high',
       time: new Date().toISOString()
     });
+    {
+      const cap = insightsBufferMax();
+      if (globalState.insights.length > cap) globalState.insights = globalState.insights.slice(0, cap);
+    }
     await persistStateToFirestore();
     return;
   }
@@ -738,7 +763,7 @@ async function startServer() {
   function sendGlobalStateJson(res: express.Response) {
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-    res.json(globalState);
+    res.json({ ...globalState, insightsBufferMax: insightsBufferMax() });
   }
 
   // Public mode: /api/state before Google auth middleware (JSON first — avoids dev/static catching the path).

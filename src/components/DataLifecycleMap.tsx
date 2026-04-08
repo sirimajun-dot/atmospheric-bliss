@@ -4,11 +4,23 @@ import { LogEntry } from '../types';
 
 interface DataLifecycleMapProps {
   logs?: LogEntry[];
+  /** Echoed from server `INSIGHTS_BUFFER_MAX` via `/api/state` → `insightsBufferMax` (default 50). */
+  insightsBufferMax?: number;
 }
 
-export const DataLifecycleMap: React.FC<DataLifecycleMapProps> = ({ logs = [] }) => {
+export const DataLifecycleMap: React.FC<DataLifecycleMapProps> = ({ logs = [], insightsBufferMax = 50 }) => {
   const [storageUsage, setStorageUsage] = React.useState<{ used: number; percent: number }>({ used: 0, percent: 0 });
   const [searchQuery, setSearchQuery] = React.useState('');
+
+  const serverInsightCap = Math.max(
+    1,
+    Number.isFinite(insightsBufferMax) && insightsBufferMax > 0 ? Math.floor(insightsBufferMax) : 50
+  );
+
+  const ingestBufferPercent = React.useMemo(
+    () => Math.min(100, (logs.length / serverInsightCap) * 100),
+    [logs.length, serverInsightCap]
+  );
 
   // Listen for global search events from the header
   React.useEffect(() => {
@@ -41,14 +53,13 @@ export const DataLifecycleMap: React.FC<DataLifecycleMapProps> = ({ logs = [] })
         }
       }
       // 5MB limit is approx 5,000,000 characters (UTF-16 code units)
-      const limit = 5 * 1024 * 1024; 
+      const limit = 5 * 1024 * 1024;
       const usedKB = total / 1024;
       const percent = (total / limit) * 100;
       setStorageUsage({ used: usedKB, percent });
     };
 
     calculateUsage();
-    // Update when storage changes (optional, but good for accuracy)
     window.addEventListener('storage', calculateUsage);
     return () => window.removeEventListener('storage', calculateUsage);
   }, []);
@@ -118,26 +129,33 @@ export const DataLifecycleMap: React.FC<DataLifecycleMapProps> = ({ logs = [] })
           <ArrowRight className="w-6 h-6 text-gray-600 rotate-90" />
         </div>
 
-        {/* Step 3: Storage */}
+        {/* Step 3: ถังแรก — แสดงผลบัฟเฟอร์หลังดึงแหล่งข่าว (insights จากเซิร์ฟเวอร์) */}
         <div className="p-5 rounded-sm border border-white/10 bg-white/5 backdrop-blur-md relative overflow-hidden">
           <div className="absolute top-0 right-0 p-2 opacity-10">
             <HardDrive className="w-16 h-16 text-emerald-400" />
           </div>
           <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-widest mb-4 flex items-center gap-2">
             <span className="w-5 h-5 rounded-full bg-emerald-400/20 flex items-center justify-center text-[10px]">3</span>
-            การจัดเก็บข้อมูล (Storage)
+            ถังแรก · บันทึกหลังรับจากแหล่งข่าว (Ingest buffer)
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <div className="text-[10px] font-bold text-gray-300 flex items-center gap-2">
-                <Database className="w-3 h-3" /> สิ่งที่ถูกเก็บ (Stored)
+                <Database className="w-3 h-3" /> สิ่งที่รายการด้านล่างแสดง (จากถังแรก)
               </div>
               <ul className="text-[9px] text-gray-400 space-y-1 list-disc pl-4">
-                <li><span className="text-emerald-400 font-bold">Risk Logs:</span> ประวัติเหตุการณ์ย้อนหลัง 5 วัน (สูงสุด 500 รายการ)</li>
-                <li><span className="text-emerald-400 font-bold">Risk Findings:</span> หลักฐานความเสี่ยงย้อนหลัง 48 ชั่วโมง</li>
-                <li><span className="text-emerald-400 font-bold">Daily Summary:</span> บทสรุปสถานการณ์รายวันล่าสุด</li>
-                <li><span className="text-emerald-400 font-bold">Location Context:</span> พิกัดโดยประมาณเพื่อพยากรณ์อากาศ</li>
+                <li>
+                  <span className="text-emerald-400 font-bold">Insights บนเซิร์ฟเวอร์:</span> ผลหลังดึงแหล่งปัจจุบัน
+                  (เช่น USGS Earthquake, CISA KEV, GDACS, ReliefWeb, Open-Meteo / สภาพอากาศ) และล็อก SYSTEM รอบสแกน
+                </li>
+                <li>
+                  <span className="text-emerald-400 font-bold">ช่วงที่เห็น:</span> บัฟเฟอร์ล่าสุดสูงสุดประมาณ {serverInsightCap} รายการ
+                  ตาม `/api/state` → <code className="text-emerald-300/90">insights</code>
+                </li>
               </ul>
+              <p className="text-[8px] text-gray-500 mt-1 leading-relaxed pl-1">
+                *ส่วนสรุปรายวัน / คะแนน 8 โดเมน อยู่ขั้นถัดไป (รายงานหลัง AI) — ไม่ใช่รายการในถังนี้
+              </p>
 
               {/* Search Functionality */}
               <div className="mt-4 space-y-3">
@@ -148,7 +166,7 @@ export const DataLifecycleMap: React.FC<DataLifecycleMapProps> = ({ logs = [] })
                   <input
                     type="text"
                     className="block w-full pl-7 pr-7 py-1.5 bg-black/40 border border-emerald-500/20 rounded-sm text-[9px] text-emerald-100 placeholder-emerald-500/30 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 transition-all"
-                    placeholder="ค้นหาใน Risk Logs..."
+                    placeholder="ค้นหาในบันทึกถังแรก (insights)..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                   />
@@ -191,19 +209,32 @@ export const DataLifecycleMap: React.FC<DataLifecycleMapProps> = ({ logs = [] })
                 </div>
               </div>
 
-              <div className="mt-3 p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-sm">
-                <div className="flex justify-between items-center mb-1">
-                  <div className="text-[9px] font-bold text-emerald-300">Storage Location: Browser LocalStorage</div>
-                  <div className="text-[9px] font-bold text-emerald-300">{storageUsage.used.toFixed(1)} KB / 5 MB</div>
+              <div className="mt-3 p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-sm space-y-2">
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <div className="text-[9px] font-bold text-emerald-300">แหล่งข้อมูลที่แสดง: เซิร์ฟเวอร์ · ถังแรก</div>
+                    <div className="text-[9px] font-bold text-emerald-300">
+                      {logs.length} / {serverInsightCap} รายการ
+                    </div>
+                  </div>
+                  <div className="w-full h-1 bg-black/40 rounded-full overflow-hidden mb-1">
+                    <div
+                      className="h-full bg-emerald-500 transition-all duration-500"
+                      style={{ width: `${ingestBufferPercent}%` }}
+                    />
+                  </div>
+                  <div className="text-[8px] text-gray-500 italic leading-relaxed">
+                    *รายการนี้มาจาก API <code className="text-emerald-400/80">/api/state</code> ฟิลด์{" "}
+                    <code className="text-emerald-400/80">insights</code> หลังแต่ละรอบดึงแหล่งข่าว — ไม่ได้อ่านจาก LocalStorage
+                  </div>
                 </div>
-                <div className="w-full h-1 bg-black/40 rounded-full overflow-hidden mb-1">
-                  <div 
-                    className="h-full bg-emerald-500 transition-all duration-500" 
-                    style={{ width: `${Math.min(100, storageUsage.percent)}%` }}
-                  />
-                </div>
-                <div className="text-[8px] text-gray-500 italic">
-                  *ข้อมูลถูกเก็บไว้ในเครื่องของคุณเท่านั้น (ใช้ไป {storageUsage.percent.toFixed(2)}% ของพื้นที่ทั้งหมด)
+                <div className="pt-1 border-t border-emerald-500/15">
+                  <div className="flex justify-between items-center text-[8px] text-gray-500">
+                    <span>การตั้งค่าในเบราว์เซอร์ (แยกจากถังแรก)</span>
+                    <span className="text-emerald-500/70 font-mono">
+                      ~{storageUsage.used.toFixed(1)} KB / 5 MB LocalStorage
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -222,7 +253,7 @@ export const DataLifecycleMap: React.FC<DataLifecycleMapProps> = ({ logs = [] })
                     <li><strong>Weather Hourly Arrays:</strong> ข้อมูลพยากรณ์รายชั่วโมงนับร้อยค่า (เก็บเฉพาะค่าปัจจุบัน)</li>
                   </ul>
                 </li>
-                <li><span className="text-rose-400 font-bold">Expired Logs:</span> ข้อมูลที่เก่ากว่า 5 วันจะถูกลบอัตโนมัติ</li>
+                <li><span className="text-rose-400 font-bold">รายการเก่าในบัฟเฟอร์:</span> เซิร์ฟเวอร์ตัดแถวเกินประมาณ {serverInsightCap} รายการต่อรอบ (ไม่เก็บประวัติยาวในรายการนี้)</li>
                 <li><span className="text-rose-400 font-bold">PII:</span> ไม่มีการเก็บชื่อ, เบอร์โทร, หรือข้อมูลระบุตัวตนจริง</li>
                 <li><span className="text-rose-400 font-bold">API Keys:</span> คีย์ของคุณจะถูกใช้เพื่อเรียก AI เท่านั้น ไม่มีการบันทึกถาวรในฐานข้อมูล</li>
               </ul>
@@ -258,8 +289,8 @@ export const DataLifecycleMap: React.FC<DataLifecycleMapProps> = ({ logs = [] })
         <div className="space-y-1">
           <h4 className="text-[11px] font-bold text-blue-300">นโยบายความเป็นส่วนตัวและความปลอดภัย</h4>
           <p className="text-[10px] text-gray-400 leading-relaxed">
-            ระบบนี้ถูกออกแบบมาให้เป็น <strong>"Privacy-First"</strong> ข้อมูลส่วนใหญ่จะถูกประมวลผลและจัดเก็บอยู่ภายในเบราว์เซอร์ของคุณ (Client-side) 
-            การส่งข้อมูลไปยัง AI จะส่งเพียง "Context" ที่จำเป็นเพื่อให้ได้บทวิเคราะห์ที่แม่นยำที่สุดเท่านั้น
+            แหล่งข่าวถูกดึงและรวมเป็น <strong>insights</strong> บนเซิร์ฟเวอร์ (ถังแรก) ก่อนส่งต่อ AI; ฝั่งเบราว์เซอร์เก็บเฉพาะการตั้งค่าเล็กน้อย (เช่น แท็บที่เปิด)
+            และแสดงผลจาก API — ไม่ได้เก็บ Risk Logs ฉบับเต็มใน LocalStorage
           </p>
         </div>
       </div>
@@ -271,18 +302,22 @@ export const DataLifecycleMap: React.FC<DataLifecycleMapProps> = ({ logs = [] })
         
         <div className="space-y-3">
           <div>
-            <div className="text-[10px] font-bold text-emerald-400 mb-1">1. วิธีการเข้าไปดูข้อมูลใน LocalStorage</div>
+            <div className="text-[10px] font-bold text-emerald-400 mb-1">1. ดูข้อมูลถังแรก (insights) และ LocalStorage</div>
             <p className="text-[9px] text-gray-400 leading-relaxed">
-              คุณสามารถตรวจสอบความโปร่งใสของข้อมูลได้ด้วยตัวเองผ่าน Browser DevTools:
-              <br />• <strong>บนคอมพิวเตอร์:</strong> คลิกขวาที่หน้าจอ &gt; เลือก 'Inspect' (ตรวจสอบ) &gt; ไปที่แท็บ 'Application' &gt; เลือก 'Local Storage' ทางซ้ายมือ
-              <br />• <strong>คีย์ที่ใช้จัดเก็บ:</strong> <code className="text-emerald-300">risk_logs</code>, <code className="text-emerald-300">risk_findings</code>, <code className="text-emerald-300">daily_summary</code>
+              <strong>ถังแรก:</strong> เปิด DevTools → แท็บ Network → โหลดหน้าแล้วดูคำขอ <code className="text-emerald-300">/api/state</code> → ดู JSON ฟิลด์{" "}
+              <code className="text-emerald-300">insights</code>
+              <br />
+              <strong>LocalStorage (เฉพาะ UI):</strong> แท็บ Application → Local Storage — คีย์ตัวอย่าง{" "}
+              <code className="text-emerald-300">active_tab</code>, <code className="text-emerald-300">disclaimer_accepted</code>,{" "}
+              <code className="text-emerald-300">alert_events_expanded_id</code>
             </p>
           </div>
 
           <div>
             <div className="text-[10px] font-bold text-emerald-400 mb-1">2. "ปิดแอปไปแล้ว" หมายถึงอะไร?</div>
             <p className="text-[9px] text-gray-400 leading-relaxed">
-              หมายถึงการปิด Tab เบราว์เซอร์, การปิดแอป LINE (ในกรณีใช้ผ่าน LINE LIFF), หรือแม้แต่การรีสตาร์ทเครื่อง ข้อมูลที่อยู่ใน LocalStorage จะถูกเขียนลงในหน่วยความจำถาวรของเครื่อง (Disk) ไม่ใช่แค่แรม (RAM) ทำให้เมื่อคุณเปิดแอปขึ้นมาใหม่ ข้อมูลเดิมจะยังคงอยู่โดยไม่ต้องโหลดใหม่จากเซิร์ฟเวอร์
+              บันทึกถังแรกอยู่บนเซิร์ฟเวอร์ — เปิดแอปใหม่แล้วโหลดจาก API ได้ตามรอบสแกน (และอาจคงค่าจาก Firestore หากเปิด persistence)
+              ส่วน LocalStorage ยังช่วยจำการตั้งค่าในเครื่อง (เช่น แท็บ) แม้ปิด Tab
             </p>
           </div>
 
@@ -308,8 +343,8 @@ export const DataLifecycleMap: React.FC<DataLifecycleMapProps> = ({ logs = [] })
             <thead>
               <tr className="border-b border-white/10 text-gray-400 uppercase">
                 <th className="py-2 px-2">หัวข้อเปรียบเทียบ</th>
-                <th className="py-2 px-2 text-emerald-400 bg-emerald-400/5">LocalStorage (ปัจจุบัน)</th>
-                <th className="py-2 px-2 text-blue-400 bg-blue-400/5">Server Storage (ทางเลือก)</th>
+                <th className="py-2 px-2 text-emerald-400 bg-emerald-400/5">เครื่องผู้ใช้ · LocalStorage</th>
+                <th className="py-2 px-2 text-blue-400 bg-blue-400/5">เซิร์ฟเวอร์ · ถังแรก + DB (โหมดปัจจุบัน)</th>
               </tr>
             </thead>
             <tbody className="text-gray-300">
