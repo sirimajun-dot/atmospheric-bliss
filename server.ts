@@ -466,6 +466,43 @@ async function fetchDataFeeds() {
       statusUpdates[WEATHER_CONNECTION_SOURCE] = "unavailable";
     }
 
+    // 5. Finance baseline (FRED) - St. Louis Financial Stress Index
+    try {
+      const fredApiKey = process.env.FRED_API_KEY?.trim();
+      if (fredApiKey) {
+        const fredUrl =
+          `https://api.stlouisfed.org/fred/series/observations` +
+          `?series_id=STLFSI4&sort_order=desc&limit=1&file_type=json&api_key=${encodeURIComponent(fredApiKey)}`;
+        const fredRes = await fetch(fredUrl);
+        if (fredRes.ok) {
+          const fredData = (await fredRes.json()) as { observations?: { date?: string; value?: string }[] };
+          const obs = Array.isArray(fredData.observations) ? fredData.observations[0] : undefined;
+          const v = Number(obs?.value);
+          if (Number.isFinite(v)) {
+            feeds.push(`[FRED] STLFSI4 latest=${v} date=${obs?.date || "n/a"}`);
+            globalState.insights.unshift({
+              id: `RAW-FRED-STLFSI4-${obs?.date || new Date().toISOString().slice(0, 10)}`,
+              source: "FRED (St. Louis Fed)",
+              insight: `ดัชนีความตึงเครียดการเงินสหรัฐ (STLFSI4) ล่าสุด = ${v.toFixed(2)}`,
+              data: JSON.stringify({ series: "STLFSI4", date: obs?.date || null, value: v }),
+              risk: v >= 1 ? "high" : v >= 0.5 ? "medium" : "normal",
+              time: obs?.date ? new Date(`${obs.date}T00:00:00Z`).toISOString() : new Date().toISOString()
+            });
+            statusUpdates["FRED (St. Louis Fed)"] = "fetched";
+          } else {
+            statusUpdates["FRED (St. Louis Fed)"] = "unavailable";
+          }
+        } else {
+          statusUpdates["FRED (St. Louis Fed)"] = "unavailable";
+        }
+      } else {
+        // keep as idle when key is not configured
+      }
+    } catch (e) {
+      console.error("FRED Fetch Failed");
+      statusUpdates["FRED (St. Louis Fed)"] = "unavailable";
+    }
+
     rawDataContext = feeds.join("\n\n");
 
     // Fill remaining as default

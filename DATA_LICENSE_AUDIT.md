@@ -14,6 +14,7 @@ From `server.ts` (`fetchDataFeeds`), these are actively called:
 | GDACS (UN/EU) RSS | `https://www.gdacs.org/xml/rss.xml` | Pull disaster alert titles, summarize in AI context/UI | Unknown (needs legal confirmation) | Review GDACS/UN/EU terms for redistribution/commercial use |
 | Open-Meteo Forecast | `https://api.open-meteo.com/v1/forecast?...` | Weather/rain probability | Unknown (needs legal confirmation) | Verify API terms, rate and attribution rules |
 | Open-Meteo Air Quality | `https://air-quality-api.open-meteo.com/v1/air-quality?...` | PM2.5 | Unknown (needs legal confirmation) | Verify API terms, rate and attribution rules |
+| FRED API (STLFSI4) | `https://api.stlouisfed.org/fred/series/observations?...` | Pull latest financial stress baseline, summarize in AI context/UI | Unknown (needs legal confirmation) | Verify FRED attribution + redistribution/commercial policy |
 
 ## Listed but not fetched yet (lower immediate runtime risk)
 
@@ -22,7 +23,6 @@ These appear in whitelist/table/backlog but are not currently called in `fetchDa
 - MITRE ATT&CK
 - ThaiCERT
 - NCSA
-- FRED (St. Louis Fed)
 - OFR Financial Stress
 - IMF GFSR + WEO
 - NASA FIRMS
