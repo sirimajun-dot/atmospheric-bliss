@@ -14,7 +14,8 @@ From `server.ts` (`fetchDataFeeds`), these are actively called:
 | GDACS (UN/EU) RSS | `https://www.gdacs.org/xml/rss.xml` | Pull disaster alert titles, summarize in AI context/UI | Unknown (needs legal confirmation) | Review GDACS/UN/EU terms for redistribution/commercial use |
 | Open-Meteo Forecast | `https://api.open-meteo.com/v1/forecast?...` | Weather/rain probability | Unknown (needs legal confirmation) | Verify API terms, rate and attribution rules |
 | Open-Meteo Air Quality | `https://air-quality-api.open-meteo.com/v1/air-quality?...` | PM2.5 | Unknown (needs legal confirmation) | Verify API terms, rate and attribution rules |
-| FRED API (STLFSI4) | `https://api.stlouisfed.org/fred/series/observations?...` | Pull latest financial stress baseline, summarize in AI context/UI | Unknown (needs legal confirmation) | Verify FRED attribution + redistribution/commercial policy |
+| FRED API (STLFSI4) | `https://api.stlouisfed.org/fred/series/observations?...` | **Optional** primary finance source; may fail due to transport timeout and degrade gracefully | Unknown (needs legal confirmation) | Verify FRED attribution + redistribution/commercial policy |
+| OFR Financial Stress Index | `https://www.financialresearch.gov/financial-stress-index/data/fsi.csv` | **Runtime fallback** when FRED is unavailable; keeps finance signal present | Unknown (needs legal confirmation) | Verify OFR attribution + redistribution/commercial policy |
 
 ## Listed but not fetched yet (lower immediate runtime risk)
 
@@ -23,7 +24,6 @@ These appear in whitelist/table/backlog but are not currently called in `fetchDa
 - MITRE ATT&CK
 - ThaiCERT
 - NCSA
-- OFR Financial Stress
 - IMF GFSR + WEO
 - NASA FIRMS
 - DDPM / T-Alert
@@ -218,7 +218,7 @@ This matrix is the operational tracker to make coverage explicit across all eigh
 | `geopolitics` | Partial | (AI inference on current context) | ReliefWeb API, UCDP API, GPR Index | `pending-source` |
 | `bio` | Partial | (AI inference on current context) | DDC Open API, WOAH WAHIS, FAO EMPRES-i | `pending-source` |
 | `ai` | Partial | Gemini analysis layer | MITRE ATLAS, AI Incident DB, OWASP AI Exchange | `pending-source` |
-| `finance` | Partial | (AI inference on current context) | FRED API, BOT API, OFR FSI, BIS Stats | `pending-source` |
+| `finance` | Yes (degraded fallback) | FRED API (optional) + OFR Financial Stress (runtime fallback) | BOT API, BIS Stats | `active+fallback` |
 | `social` | Partial | (AI inference on current context) | data.go.th, Traffy Fondue, GISTDA Open Data | `pending-source` |
 
 ### Completion definition (what "ครบ 8" means)

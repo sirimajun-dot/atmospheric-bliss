@@ -35,9 +35,12 @@ We use a **Unified Express + Vite Architecture** running strictly on **Port 3333
 | CISA KEV (API) | Yes | JSON feed |
 | GDACS (UN/EU) | Yes | RSS (may fail behind some networks) |
 | Open-Meteo (weather/air · Bangkok) | Yes | Forecast + air-quality; Bangkok coords — not a direct TMD API |
+| FRED (St. Louis Fed) | Optional | Primary finance source; if unreachable, system degrades gracefully |
+| OFR Financial Stress | Yes (fallback) | Fetched when FRED is unavailable to maintain finance signal continuity |
 | All other names in `AUTHORIZED_SOURCES` | `idle` | Placeholder until wired; see `DATA_LICENSE_AUDIT.md` before adding |
 
 Optional env: **`INSIGHTS_BUFFER_MAX`** (10–500, default 50) caps `globalState.insights` and is echoed as **`insightsBufferMax`** on `/api/state`.
+Optional env: **`FRED_FETCH_TIMEOUT_MS`** (4,000–30,000; default 20,000) and **`OFR_FETCH_TIMEOUT_MS`** (4,000–30,000; default 12,000) tune finance feed timeouts.
 
 ## 💂‍♂️ AI System Prompt Defaults
 *When continuing work on this project, adhere strictly to the following parameters:*

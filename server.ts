@@ -1,5 +1,7 @@
 import express from "express";
 import http from "http";
+import https from "https";
+import dns from "dns";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from 'url';
@@ -21,6 +23,248 @@ const minutesAgo = (m: number) => new Date(Date.now() - m * 60000).toISOString()
 
 function delay(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function errorCodeFromUnknown(e: unknown): string | undefined {
+  if (!e || typeof e !== "object") return undefined;
+  const code = (e as { code?: unknown }).code;
+  if (typeof code === "string") return code;
+  const causeCode = ((e as { cause?: { code?: unknown } }).cause?.code);
+  return typeof causeCode === "string" ? causeCode : undefined;
+}
+
+function fetchJsonViaHttps(url: string, timeoutMs: number): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      url,
+      {
+        family: 4, // fallback path for environments with flaky IPv6 egress
+        timeout: timeoutMs,
+        headers: { "User-Agent": "atmospheric-bliss/1.0" },
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => {
+          const statusCode = res.statusCode || 0;
+          if (statusCode < 200 || statusCode >= 300) {
+            return reject(new Error(`HTTP_${statusCode} ${body.slice(0, 240)}`));
+          }
+          try {
+            resolve(JSON.parse(body));
+          } catch (err) {
+            reject(err);
+          }
+        });
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy(new Error(`HTTPS_TIMEOUT_${timeoutMs}ms`));
+    });
+    req.on("error", reject);
+  });
+}
+
+function fetchJsonViaResolvedIp(url: string, timeoutMs: number): Promise<unknown> {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const target = new URL(url);
+      const host = target.hostname;
+      const lookup = await dns.promises.lookup(host, { family: 0, all: false, verbatim: true });
+      const req = https.request(
+        {
+          protocol: target.protocol,
+          hostname: lookup.address,
+          servername: host,
+          method: "GET",
+          path: `${target.pathname}${target.search}`,
+          timeout: timeoutMs,
+          family: lookup.family,
+          headers: {
+            Host: host,
+            "User-Agent": "atmospheric-bliss/1.0",
+          },
+        },
+        (res) => {
+          let body = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => {
+            body += chunk;
+          });
+          res.on("end", () => {
+            const statusCode = res.statusCode || 0;
+            if (statusCode < 200 || statusCode >= 300) {
+              return reject(
+                new Error(`HTTP_${statusCode} ip=${lookup.address} host=${host} body=${body.slice(0, 240)}`)
+              );
+            }
+            try {
+              resolve(JSON.parse(body));
+            } catch (err) {
+              reject(err);
+            }
+          });
+        }
+      );
+      req.on("timeout", () => req.destroy(new Error(`HTTPS_IP_TIMEOUT_${timeoutMs}ms`)));
+      req.on("error", reject);
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function fetchJsonWithDnsReresolveRetry(url: string, timeoutMs: number, maxAttempts: number): Promise<unknown> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const started = Date.now();
+      const data = await fetchJsonViaResolvedIp(url, timeoutMs);
+      console.log(`[FRED] dns-reresolve attempt=${attempt}/${maxAttempts} status=ok elapsedMs=${Date.now() - started}`);
+      return data;
+    } catch (err) {
+      lastErr = err;
+      const code = errorCodeFromUnknown(err) || "unknown";
+      const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      console.warn(`[FRED] dns-reresolve attempt=${attempt}/${maxAttempts} status=fail code=${code} detail=${detail}`);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("FRED_DNS_RERESOLVE_FAILED");
+}
+
+type OfrFsiPoint = {
+  date: string;
+  value: number;
+};
+
+function parseLatestOfrFsi(csvText: string): OfrFsiPoint | null {
+  const lines = csvText
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (lines.length < 2) return null;
+  for (let i = lines.length - 1; i >= 1; i--) {
+    const cols = lines[i].split(",");
+    if (cols.length < 2) continue;
+    const date = cols[0]?.trim();
+    const value = Number(cols[cols.length - 1]?.trim());
+    if (!date || !Number.isFinite(value)) continue;
+    return { date, value };
+  }
+  return null;
+}
+
+async function fetchOfrFsiFallback(statusUpdates: Record<string, string>, feeds: any[]): Promise<boolean> {
+  const timeoutMs = Math.max(4000, Math.min(30000, Number(process.env.OFR_FETCH_TIMEOUT_MS || 12000)));
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const url = "https://www.financialresearch.gov/financial-stress-index/data/fsi.csv";
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) {
+      const body = await res.text();
+      console.warn(`[OFR] non-ok response status=${res.status} body=${body.slice(0, 200)}`);
+      statusUpdates["OFR Financial Stress"] = "unavailable";
+      return false;
+    }
+    const latest = parseLatestOfrFsi(await res.text());
+    if (!latest) {
+      console.warn("[OFR] parse failed: no valid data rows");
+      statusUpdates["OFR Financial Stress"] = "unavailable";
+      return false;
+    }
+    feeds.push(`[OFR] FSI latest=${latest.value} date=${latest.date}`);
+    globalState.insights.unshift({
+      id: `RAW-OFR-FSI-${latest.date}`,
+      source: "OFR Financial Stress",
+      insight: `ดัชนีความตึงเครียดการเงิน OFR FSI ล่าสุด = ${latest.value.toFixed(2)}`,
+      data: JSON.stringify({ series: "OFR_FSI", date: latest.date, value: latest.value }),
+      risk: latest.value >= 1 ? "high" : latest.value >= 0.5 ? "medium" : "normal",
+      time: new Date(`${latest.date}T00:00:00Z`).toISOString()
+    });
+    statusUpdates["OFR Financial Stress"] = "fetched";
+    console.log(`[OFR] status=fetched latest=${latest.value} date=${latest.date}`);
+    return true;
+  } catch (e) {
+    const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    console.warn(`[OFR] fallback failed ${detail}`);
+    statusUpdates["OFR Financial Stress"] = "unavailable";
+    return false;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+type FredProbeResult = {
+  connectMs?: number;
+  tlsMs?: number;
+  totalMs: number;
+};
+
+type FredDnsProbeResult = {
+  dnsMs: number;
+  address: string;
+  family: number;
+};
+
+async function probeFredDns(): Promise<FredDnsProbeResult> {
+  const dnsStarted = Date.now();
+  const lookup = await dns.promises.lookup("api.stlouisfed.org", { family: 0, all: false, verbatim: true });
+  return {
+    dnsMs: Date.now() - dnsStarted,
+    address: lookup.address,
+    family: lookup.family,
+  };
+}
+
+function probeFredTransport(timeoutMs: number, family: number): Promise<FredProbeResult> {
+  return new Promise(async (resolve, reject) => {
+    const startedAt = Date.now();
+    try {
+      const req = https.request(
+        {
+          protocol: "https:",
+          hostname: "api.stlouisfed.org",
+          method: "HEAD",
+          path: "/",
+          timeout: timeoutMs,
+          family,
+          headers: { "User-Agent": "atmospheric-bliss/1.0" },
+        },
+        (res) => {
+          res.resume();
+          res.on("end", () => {
+            resolve({
+              connectMs: connectMs || undefined,
+              tlsMs: tlsMs || undefined,
+              totalMs: Date.now() - startedAt,
+            });
+          });
+        }
+      );
+
+      let connectMs = 0;
+      let tlsMs = 0;
+      req.on("socket", (socket) => {
+        const transportStart = Date.now();
+        socket.once("connect", () => {
+          connectMs = Date.now() - transportStart;
+        });
+        socket.once("secureConnect", () => {
+          tlsMs = Date.now() - transportStart;
+        });
+      });
+      req.on("timeout", () => req.destroy(new Error(`FRED_PROBE_TIMEOUT_${timeoutMs}ms`)));
+      req.on("error", reject);
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
 }
 
 /** Flatten Google GenAI / fetch-style errors for status + message sniffing. */
@@ -469,15 +713,75 @@ async function fetchDataFeeds() {
     // 5. Finance baseline (FRED) - St. Louis Financial Stress Index
     try {
       const fredApiKey = process.env.FRED_API_KEY?.trim();
+      let fredFetched = false;
       if (fredApiKey) {
         const fredUrl =
           `https://api.stlouisfed.org/fred/series/observations` +
           `?series_id=STLFSI4&sort_order=desc&limit=1&file_type=json&api_key=${encodeURIComponent(fredApiKey)}`;
-        const fredRes = await fetch(fredUrl);
-        if (fredRes.ok) {
-          const fredData = (await fredRes.json()) as { observations?: { date?: string; value?: string }[] };
+        const controller = new AbortController();
+        const timeoutMs = Math.max(4000, Math.min(30000, Number(process.env.FRED_FETCH_TIMEOUT_MS || 20000)));
+        const probeTimeoutMs = Math.max(3000, Math.min(8000, timeoutMs));
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        let fredData: { observations?: { date?: string; value?: string }[] } | null = null;
+        let fredStatusCode = 0;
+        try {
+          const dnsProbe = await probeFredDns();
+          console.log(
+            `[FRED] dns ok dnsMs=${dnsProbe.dnsMs} address=${dnsProbe.address} family=${dnsProbe.family}`
+          );
+          const probe = await probeFredTransport(probeTimeoutMs, dnsProbe.family);
+          console.log(
+            `[FRED] transport ok connectMs=${probe.connectMs ?? "n/a"} tlsMs=${probe.tlsMs ?? "n/a"} totalMs=${probe.totalMs}`
+          );
+        } catch (probeErr) {
+          const probeCode = errorCodeFromUnknown(probeErr) || "unknown";
+          const probeDetail = probeErr instanceof Error ? `${probeErr.name}: ${probeErr.message}` : String(probeErr);
+          console.warn(`[FRED] transport failed code=${probeCode} detail=${probeDetail}`);
+        }
+        try {
+          const fredRes = await fetch(fredUrl, { signal: controller.signal });
+          fredStatusCode = fredRes.status;
+          console.log(`[FRED] response status=${fredRes.status} ok=${fredRes.ok}`);
+          if (fredRes.ok) {
+            fredData = (await fredRes.json()) as { observations?: { date?: string; value?: string }[] };
+          } else {
+            const fredErr = await fredRes.text();
+            console.warn(`[FRED] non-ok response body=${fredErr.slice(0, 240)}`);
+          }
+        } catch (primaryErr) {
+          const code = errorCodeFromUnknown(primaryErr) || "unknown";
+          const detail = primaryErr instanceof Error ? `${primaryErr.name}: ${primaryErr.message}` : String(primaryErr);
+          console.warn(`[FRED] primary fetch failed code=${code} detail=${detail}`);
+          try {
+            const fallbackJson = await fetchJsonViaHttps(fredUrl, timeoutMs);
+            fredData = fallbackJson as { observations?: { date?: string; value?: string }[] };
+            console.log("[FRED] fallback transport=https family=4 succeeded");
+          } catch (fallbackErr) {
+            const fallbackCode = errorCodeFromUnknown(fallbackErr) || "unknown";
+            const fallbackDetail =
+              fallbackErr instanceof Error ? `${fallbackErr.name}: ${fallbackErr.message}` : String(fallbackErr);
+            console.error(`[FRED] fallback failed code=${fallbackCode} detail=${fallbackDetail}`);
+            try {
+              const retryAttempts = 2;
+              const retriedJson = await fetchJsonWithDnsReresolveRetry(fredUrl, timeoutMs, retryAttempts);
+              fredData = retriedJson as { observations?: { date?: string; value?: string }[] };
+              console.log(`[FRED] fallback dns-reresolve retry succeeded attempts=${retryAttempts}`);
+            } catch (retryErr) {
+              const retryCode = errorCodeFromUnknown(retryErr) || "unknown";
+              const retryDetail = retryErr instanceof Error ? `${retryErr.name}: ${retryErr.message}` : String(retryErr);
+              console.error(`[FRED] dns-reresolve retry failed code=${retryCode} detail=${retryDetail}`);
+            }
+          }
+        } finally {
+          clearTimeout(timeoutId);
+        }
+        if (fredData) {
           const obs = Array.isArray(fredData.observations) ? fredData.observations[0] : undefined;
-          const v = Number(obs?.value);
+          const rawValue = typeof obs?.value === "string" ? obs.value.trim() : "";
+          const v = rawValue && rawValue !== "." ? Number(rawValue) : Number.NaN;
+          console.log(
+            `[FRED] observations=${Array.isArray(fredData.observations) ? fredData.observations.length : 0} date=${obs?.date || "n/a"} rawValue=${rawValue || "n/a"} parsedFinite=${Number.isFinite(v)} statusCode=${fredStatusCode || "fallback"}`
+          );
           if (Number.isFinite(v)) {
             feeds.push(`[FRED] STLFSI4 latest=${v} date=${obs?.date || "n/a"}`);
             globalState.insights.unshift({
@@ -489,18 +793,29 @@ async function fetchDataFeeds() {
               time: obs?.date ? new Date(`${obs.date}T00:00:00Z`).toISOString() : new Date().toISOString()
             });
             statusUpdates["FRED (St. Louis Fed)"] = "fetched";
+            fredFetched = true;
+            console.log("[FRED] status=fetched");
           } else {
             statusUpdates["FRED (St. Louis Fed)"] = "unavailable";
+            console.warn("[FRED] status=unavailable reason=non-numeric-or-missing-value");
           }
         } else {
           statusUpdates["FRED (St. Louis Fed)"] = "unavailable";
         }
       } else {
-        // keep as idle when key is not configured
+        // FRED is optional while network path is unstable.
+        statusUpdates["FRED (St. Louis Fed)"] = "unavailable";
+        console.warn("[FRED] optional source skipped: FRED_API_KEY is missing");
+      }
+
+      if (!fredFetched) {
+        await fetchOfrFsiFallback(statusUpdates, feeds);
       }
     } catch (e) {
-      console.error("FRED Fetch Failed");
+      const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      console.error(`[FRED] Fetch failed ${detail}`);
       statusUpdates["FRED (St. Louis Fed)"] = "unavailable";
+      await fetchOfrFsiFallback(statusUpdates, feeds);
     }
 
     rawDataContext = feeds.join("\n\n");
